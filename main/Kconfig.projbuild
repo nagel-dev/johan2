@@ -1,0 +1,39 @@
+menu "Johan2 Player Configuration"
+    config JOHAN2_WIFI_SSID
+        string "Wi-Fi SSID"
+        default ""
+    config JOHAN2_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+    config JOHAN2_PLAYER_NAME
+        string "Name shown in Music Assistant"
+        default "Johan2 AUX"
+    config JOHAN2_SERVER_URL
+        string "Optional Sendspin WebSocket URL (blank for discovery)"
+        default ""
+        help
+            Optional ws://HOST:8928/sendspin URL. Normally Music Assistant
+            discovers this player through mDNS and connects to it.
+    config JOHAN2_INITIAL_VOLUME
+        int "Initial volume (percent)"
+        range 0 100
+        default 35
+    config JOHAN2_I2S_BCLK
+        int "PCM5102A BCLK GPIO"
+        range 0 48
+        default 6
+    config JOHAN2_I2S_LRCK
+        int "PCM5102A LRCK GPIO"
+        range 0 48
+        default 5
+    config JOHAN2_I2S_DOUT
+        int "PCM5102A DIN GPIO"
+        range 0 48
+        default 4
+    config JOHAN2_LED_GPIO
+        int "Onboard addressable RGB LED GPIO (-1 disables)"
+        range -1 48
+        default 48
+        help
+            ESP32-S3-DevKitC-1 v1.0 uses GPIO48, v1.1 uses GPIO38.
+endmenu

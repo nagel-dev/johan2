@@ -1,0 +1,81 @@
+dependencies:
+  bblanchon/arduinojson:
+    component_hash: 5e6aff2bc5bc988b36c8e90c01e637495ee895ad3af93911860c21ec6da79b6a
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 7.4.3
+  esphome/micro-flac:
+    component_hash: a06a472806f8bd7c77bf0329119806bdabfa0101686971f3553b8d90b1002444
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.3.0
+  esphome/micro-opus:
+    component_hash: c4cec51b6e45b9b660bf8725a10c65f46485ff8b37ff664e4da3fd738301c71e
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.4.1
+  espressif/esp_websocket_client:
+    component_hash: dc00233af846f3a744ada283a300e0d586040aadc3ee67361645ecdce4523672
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.8.0
+  espressif/mdns:
+    component_hash: b5b30022c46302eab89c1d2e3b6fb5918a627563a7462f0ee284b22b9a934967
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.14.0
+  idf:
+    source:
+      type: idf
+    version: 6.0.1
+  sendspin-cpp:
+    component_hash: ad2ee90dc39f11803b78e167a7e6dc6befb003ed9d95a5f04ddbc1a6cc836970
+    dependencies:
+    - name: idf
+      version: '>=5.5'
+    - name: espressif/esp_websocket_client
+      version: '>=1.0.0'
+    - name: bblanchon/arduinojson
+      version: '>=7.4.2'
+    - name: esphome/micro-flac
+      rules:
+      - if: $CONFIG{SENDSPIN_ENABLE_PLAYER} == True
+      version: '>=0.1.1'
+    - name: esphome/micro-opus
+      rules:
+      - if: $CONFIG{SENDSPIN_ENABLE_PLAYER} == True
+      version: '>=0.3.5'
+    source:
+      git: https://github.com/Sendspin/sendspin-cpp.git
+      path: .
+      type: git
+    version: 9331ace6428979982c934384702d289958ca125e
+direct_dependencies:
+- espressif/mdns
+- idf
+- sendspin-cpp
+manifest_hash: 6334f28c23593743d125f1c2eb2d5250ae5e302a1d6a6a9ba69cb727f6cc1f95
+target: esp32s3
+version: 3.0.0
