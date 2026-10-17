@@ -4,4 +4,3 @@ dependencies:
     git: https://github.com/Sendspin/sendspin-cpp.git
     version: 9331ace6428979982c934384702d289958ca125e
   espressif/mdns: "^1.11.0"
-  espressif/led_strip: "3.0.1"

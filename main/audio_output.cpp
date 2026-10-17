@@ -1,6 +1,7 @@
 #include "audio_output.h"
 #include <algorithm>
-#include <cstdlib>
+#include <cmath>
+#include "freertos/task.h"
 #include <cstring>
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -14,16 +15,43 @@ static_assert(CONFIG_JOHAN2_I2S_BCLK != CONFIG_JOHAN2_I2S_LRCK &&
 void AudioOutput::init(sendspin::PlayerRole& player) {
     player_ = &player;
 #if CONFIG_JOHAN2_LED_GPIO >= 0
-    led_strip_config_t strip{};
-    strip.strip_gpio_num = CONFIG_JOHAN2_LED_GPIO;
-    strip.max_leds = 1;
-    led_strip_rmt_config_t rmt{};
-    rmt.resolution_hz = 10 * 1000 * 1000;
-    if (led_strip_new_rmt_device(&strip, &rmt, &led_) == ESP_OK) led_strip_clear(led_);
-    else ESP_LOGW(TAG, "LED init failed");
+    // WS2812 at 10 MHz ticks: bit0 = 0.3/0.9 us, bit1 = 0.9/0.3 us.
+    rmt_tx_channel_config_t tx{};
+    tx.gpio_num = static_cast<gpio_num_t>(CONFIG_JOHAN2_LED_GPIO);
+    tx.clk_src = RMT_CLK_SRC_DEFAULT;
+    tx.resolution_hz = 10 * 1000 * 1000;
+    tx.mem_block_symbols = 64;
+    tx.trans_queue_depth = 1;
+    rmt_bytes_encoder_config_t enc{};
+    enc.bit0 = {3, 1, 9, 0};
+    enc.bit1 = {9, 1, 3, 0};
+    enc.flags.msb_first = 1;
+    if (rmt_new_tx_channel(&tx, &led_chan_) == ESP_OK && rmt_new_bytes_encoder(&enc, &led_enc_) == ESP_OK &&
+        rmt_enable(led_chan_) == ESP_OK) {
+        set_led(0, 0, 0);
+    } else {
+        led_enc_ = nullptr;
+        ESP_LOGW(TAG, "LED init failed");
+    }
 #endif
+    // Separate I2S controller: microphone clocks continue while playback is idle.
+    i2s_chan_config_t mic_channel = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
+    ESP_ERROR_CHECK(i2s_new_channel(&mic_channel, nullptr, &mic_rx_));
+    i2s_std_config_t mic{};
+    mic.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(16000);
+    mic.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO);
+    mic.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT; // INMP441 L/R tied to GND.
+    mic.gpio_cfg.mclk = I2S_GPIO_UNUSED;
+    mic.gpio_cfg.bclk = GPIO_NUM_15;
+    mic.gpio_cfg.ws = GPIO_NUM_16;
+    mic.gpio_cfg.dout = I2S_GPIO_UNUSED;
+    mic.gpio_cfg.din = GPIO_NUM_17;
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(mic_rx_, &mic));
+    ESP_ERROR_CHECK(i2s_channel_enable(mic_rx_));
+    ESP_ERROR_CHECK(xTaskCreate(microphone_task, "mic_level", 4096, this, 4, nullptr) == pdPASS
+                    ? ESP_OK : ESP_ERR_NO_MEM);
     volume_.store(CONFIG_JOHAN2_INITIAL_VOLUME);
-    i2s_chan_config_t channel = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
+    i2s_chan_config_t channel = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     channel.dma_desc_num = DMA_DESCRIPTORS;
     channel.dma_frame_num = DMA_FRAMES;
     channel.auto_clear_after_cb = true;
@@ -52,19 +80,40 @@ bool AudioOutput::sent(i2s_chan_handle_t, i2s_event_data_t* event, void* context
     return false;
 }
 
+void AudioOutput::set_led(uint8_t r, uint8_t g, uint8_t b) {
+    const uint8_t grb[3] = {g, r, b};
+    rmt_transmit_config_t cfg{};
+    if (rmt_transmit(led_chan_, led_enc_, grb, sizeof(grb), &cfg) == ESP_OK) {
+        // RMT consumes the buffer asynchronously; retain it until transmission finishes.
+        ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_chan_, 100));
+    }
+}
+
 void AudioOutput::update_led() {
-    if (!led_) return;
+    if (!led_enc_) return;
     const int64_t now = esp_timer_get_time();
     if (now < led_next_us_) return;
     led_next_us_ = now + 25000;
-    // Instant attack, fast decay; sqrt-like curve keeps quiet passages visible.
-    const uint8_t peak = active_.load() ? peak_.exchange(0) : 0;
-    uint8_t level = led_level_ > 12 ? led_level_ - led_level_ / 4 : 0;
-    if (peak > level) level = peak;
-    if (level == led_level_) return;
-    led_level_ = level;
-    led_strip_set_pixel(led_, 0, level, level / 2, level);
-    led_strip_refresh(led_);
+    const uint8_t mic_peak = peak_.exchange(0);
+    led_level_ = std::max<int>(mic_peak, led_level_ > 4 ? led_level_ - std::max(1, led_level_ / 5) : 0);
+    const uint8_t source_peak = music_peak_.exchange(0);
+    const uint8_t peak = active_.load() ? source_peak : 0;
+    uint8_t level = music_level_ > 12 ? music_level_ - music_level_ / 4 : 0;
+    if (peak > level + 40) led_hue_ = (led_hue_ + 85) % 768;
+    else led_hue_ = (led_hue_ + 1) % 768;
+    music_level_ = std::max(level, peak);
+    if (led_level_) {
+        const uint8_t white = led_level_ * LED_MAX_BRIGHTNESS / 255;
+        set_led(white, white, white);
+        return;
+    }
+    const int v = music_level_ * LED_MAX_BRIGHTNESS / 255;
+    const int step = led_hue_ % 256;
+    switch (led_hue_ / 256) {
+        case 0: set_led(v * (255 - step) / 255, v * step / 255, 0); break;
+        case 1: set_led(0, v * (255 - step) / 255, v * step / 255); break;
+        default: set_led(v * step / 255, 0, v * (255 - step) / 255); break;
+    }
 }
 
 void AudioOutput::poll() {
@@ -107,17 +156,62 @@ size_t AudioOutput::on_audio_write(uint8_t* data, size_t length, uint32_t timeou
         memcpy(&sample, data + i * 2, sizeof(sample));
         scratch_[i] = static_cast<int16_t>(static_cast<int32_t>(sample) * gain / 100);
     }
-    // Level from the source signal, so the LED follows music independent of volume.
-    int peak = 0;
+    // Preserve the original source-level music effect, independent of playback volume.
+    int music_peak = 0;
     for (size_t i = 0; i < bytes / 2; ++i) {
         int16_t sample;
         memcpy(&sample, data + i * 2, sizeof(sample));
-        peak = std::max(peak, std::abs(static_cast<int>(sample)));
+        music_peak = std::max(music_peak, std::abs(static_cast<int>(sample)));
     }
-    const int level = std::min(255, peak / 96);
-    if (level > peak_.load()) peak_.store(static_cast<uint8_t>(level));
+    const auto music_level = static_cast<uint8_t>(std::min(255, music_peak / 96));
+    uint8_t previous = music_peak_.load();
+    while (music_level > previous && !music_peak_.compare_exchange_weak(previous, music_level)) {}
     size_t written = 0;
     const esp_err_t err = i2s_channel_write(tx_, scratch_, bytes, &written, timeout_ms);
     if (err != ESP_OK && err != ESP_ERR_TIMEOUT) ESP_LOGW(TAG, "I2S: %s", esp_err_to_name(err));
     return written;
+}
+
+void AudioOutput::microphone_task(void* context) {
+    auto& self = *static_cast<AudioOutput*>(context);
+    int32_t samples[256];
+    // Learn ambient noise for about one second; keep quiet during startup.
+    double noise = 0;
+    size_t calibration_samples = 0;
+    unsigned calibration_blocks = 0;
+    while (true) {
+        size_t bytes = 0;
+        const esp_err_t err = i2s_channel_read(self.mic_rx_, samples, sizeof(samples), &bytes, 100);
+        if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
+            self.peak_.store(0);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+        const size_t count = bytes / sizeof(samples[0]);
+        if (!count) continue;
+        // INMP441 supplies signed 24-bit samples in the high bits of each 32-bit slot.
+        // Remove DC before measuring RMS, so a static offset cannot light the LED.
+        double sum = 0, squares = 0;
+        for (size_t i = 0; i < count; ++i) {
+            const double sample = samples[i] / 256;
+            sum += sample;
+            squares += sample * sample;
+        }
+        const double mean = sum / count;
+        const double rms = std::sqrt(std::max(0.0, squares / count - mean * mean));
+        if (calibration_samples < 16000) {
+            noise += rms;
+            ++calibration_blocks;
+            calibration_samples += count;
+            if (calibration_samples >= 16000) noise /= calibration_blocks;
+            continue;
+        }
+        const double threshold = std::max(500.0, noise * 3.0);
+        // Follow slow ambient changes without immediately absorbing speech/claps.
+        noise += (rms < threshold ? 0.01 : 0.0001) * (rms - noise);
+        const auto level = static_cast<uint8_t>(std::clamp(
+            (rms - threshold) * 255.0 / std::max(8000.0, threshold * 2.0), 0.0, 255.0));
+        uint8_t previous = self.peak_.load();
+        while (level > previous && !self.peak_.compare_exchange_weak(previous, level)) {}
+    }
 }

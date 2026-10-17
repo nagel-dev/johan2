@@ -125,3 +125,15 @@ player and adjust output delay if the connected amplifier adds latency.
 
 Zie [ha/README.md](ha/README.md) voor het handmatig testen en de blueprint
 voor een gesproken melding wanneer de achterdeur opengaat.
+
+### INMP441 microphone LED test
+
+Wire VDD to 3V3 (never 5V), GND and L/R to GND, SCK to GPIO15,
+WS to GPIO16, and SD to GPIO17. The microphone uses a separate I2S controller
+at 16 kHz with 32-bit left-channel slots. The RGB LED retains its coloured music effect. Sound above the microphone noise
+threshold temporarily overrides it with white; brightness follows RMS level with
+a short decay, capped at 35% per colour. Keep quiet for the first second after
+startup while ambient noise is calibrated. In silence it returns to music colours
+or turns off when no music is playing.
+The microphone is only measured locally; samples are not transmitted or stored.
+Physical microphone/LED operation still needs verification after flashing.

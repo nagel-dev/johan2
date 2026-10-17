@@ -1,5 +1,11 @@
 # Changes
 
+## 2026-10-17
+- **Fix** Restored the coloured source-level music LED effect. Microphone sound temporarily overrides it in white and then fades back to music (or off while idle). Added one-second startup ambient calibration and an adaptive noise gate to suppress continuous white from background noise; physical sensitivity and playback response require verification.
+- **Feature** Added an INMP441 input on GPIO15 (SCK), GPIO16 (WS), GPIO17 (SD), with L/R grounded. A dedicated task measures DC-corrected RMS at 16 kHz and drives the RGB LED white with increasing brightness; replaces the music colour effect and works while playback is idle. Separate I2S controllers preserve DAC clocks on GPIO6/5/4. Microphone and LED behaviour require physical verification.
+- **Fix** Wait for RMT LED transmission before releasing its stack-backed pixel buffer.
+- **Validation** `./scripts/idf.sh build` passed with ESP-IDF 6.0.1; firmware has not been flashed and physical microphone/LED response remains unverified.
+
 ## 2026-10-16
 - **Feature** Created an ESP-IDF 6.0.1 Sendspin AUX player for ESP32-S3 N16R8 and PCM5102A on GPIO6/5/4, so Music Assistant can send Spotify audio to the existing AUX hardware.
 - **Feature** Added Wi-Fi retries, mDNS discovery, volume/mute, DMA playback feedback, and persistent player identity/pairing, so the device can operate as a standalone network audio endpoint.
@@ -14,4 +20,5 @@
 - **Validation** Restored firmware 0.2.2 passed `./scripts/idf.sh build` and whitespace checks; playback quality must be confirmed after flashing.
 - **Feature** Added an HA blueprint for a back-door-open announcement on a selectable Music Assistant player, using MA's configured TTS engine, a closed-to-open trigger, one-second debounce and ten-second cooldown, so the current ESP32 player can announce door events without firmware changes. The HomeDash sensor ID is prefilled; HA was unreachable, so installation and end-to-end testing remain pending.
 - **Fix** Changed the door blueprint to HA `tts.speak` with a selectable HA TTS entity after the installed MA action rejected `message`; removed the unsupported per-call announcement volume and corrected setup instructions. This uses HA TTS, not the MA-only OpenAI TTS plugin.
-- **Feature** The onboard addressable RGB LED (GPIO48 by default, `JOHAN2_LED_GPIO`, -1 disables; DevKitC-1 v1.1 uses GPIO38) now pulses with the music's peak level via pinned espressif/led_strip 3.0.1, updated from task context only. Compile-verified only; physical LED behaviour needs a hardware check.
+- **Feature** The onboard addressable RGB LED (GPIO48 by default, `JOHAN2_LED_GPIO`, -1 disables; DevKitC-1 v1.1 uses GPIO38) now pulses with the music's peak level via the built-in RMT driver (WS2812 timing, no new dependency), updated from task context only. Compile-verified only; physical LED behaviour needs a hardware check.
+- **Improvement** The music LED is dimmer (capped at about 35 % brightness) and cycles through red, green and blue: it jumps to the next colour on each beat and drifts slowly in between. Compile-checked only; look and brightness need a hardware check.

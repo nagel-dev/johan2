@@ -3,7 +3,7 @@
 #include "driver/i2s_std.h"
 #include "freertos/FreeRTOS.h"
 #include "sendspin/player_role.h"
-#include "led_strip.h"
+#include "driver/rmt_tx.h"
 
 class AudioOutput : public sendspin::PlayerRoleListener {
 public:
@@ -19,11 +19,19 @@ private:
     static constexpr size_t DMA_DESCRIPTORS = 6;
     static constexpr size_t DMA_FRAMES = 240;
     static constexpr size_t CHANNELS = 2;
+    static constexpr int LED_MAX_BRIGHTNESS = 90;
     static bool sent(i2s_chan_handle_t, i2s_event_data_t*, void*);
     void update_led();
-    led_strip_handle_t led_{nullptr};
+    void set_led(uint8_t r, uint8_t g, uint8_t b);
+    rmt_channel_handle_t led_chan_{nullptr};
+    rmt_encoder_handle_t led_enc_{nullptr};
     std::atomic<uint8_t> peak_{0};
     uint8_t led_level_{0};
+    std::atomic<uint8_t> music_peak_{0};
+    uint8_t music_level_{0};
+    uint16_t led_hue_{0};
+    static void microphone_task(void* context);
+    i2s_chan_handle_t mic_rx_{nullptr};
     int64_t led_next_us_{0};
     sendspin::PlayerRole* player_{nullptr};
     i2s_chan_handle_t tx_{nullptr};
