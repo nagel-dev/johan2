@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Run from any directory: scripts/idf.sh menuconfig | build | -p PORT flash monitor
 set -e
+# The ESP-IDF component manager keeps bare git caches; a global safe.bareRepository=explicit breaks it.
+# Override for this process only, preserving any GIT_CONFIG_COUNT entries already set.
+count="${GIT_CONFIG_COUNT:-0}"
+export "GIT_CONFIG_KEY_${count}=safe.bareRepository" "GIT_CONFIG_VALUE_${count}=all" GIT_CONFIG_COUNT=$((count + 1))
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 idf_root="${IDF_PATH:-$HOME/esp/v6.0.1/esp-idf}"
 if [[ ! -f "$idf_root/export.sh" ]]; then
