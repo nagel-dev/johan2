@@ -4,3 +4,6 @@ dependencies:
     git: https://github.com/Sendspin/sendspin-cpp.git
     version: 9331ace6428979982c934384702d289958ca125e
   espressif/mdns: "^1.11.0"
+  espressif/esp_websocket_client: "1.8.0"
+  bblanchon/arduinojson: "7.4.3"
+  espressif/esp_audio_codec: "2.6.2"

@@ -14,6 +14,7 @@
 #include "sendspin/player_role.h"
 #include "network.h"
 #include "audio_output.h"
+#include "assist_client.h"
 
 static const char* TAG = "johan2";
 
@@ -67,7 +68,9 @@ extern "C" void app_main() {
     };
     auto& player = client.add_player(std::move(player_config));
     static AudioOutput audio;
-    audio.init(player);
+    static AssistClient assist;
+    assist.start(&audio);
+    audio.init(player, &assist);
     player.set_listener(&audio);
     player.update_volume(CONFIG_JOHAN2_INITIAL_VOLUME);
     client.set_network_provider(&network);

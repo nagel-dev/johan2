@@ -36,4 +36,41 @@ menu "Johan2 Player Configuration"
         default 48
         help
             ESP32-S3-DevKitC-1 v1.0 uses GPIO48, v1.1 uses GPIO38.
+    config JOHAN2_HA_WS_URL
+        string "Home Assistant WebSocket URL"
+        default "ws://haos.home:8123/api/websocket"
+    config JOHAN2_HA_TOKEN
+        string "Home Assistant long-lived access token (local sdkconfig only)"
+        default ""
+        help
+            Leave blank to disable Assist. Never commit or log this credential.
+    config JOHAN2_HA_PIPELINE
+        string "Assist pipeline ID (blank uses preferred assistant)"
+        default ""
+    config JOHAN2_HA_REPLY_PLAYER
+        string "HA media_player entity for spoken replies (blank disables)"
+        default ""
+        help
+            Set the Music Assistant media_player entity for this Johan2 AUX player.
+            Assist generates TTS and forwards it as an announcement via Music Assistant.
+    config JOHAN2_TTS_DIRECT
+        bool "Play spoken replies directly on this device"
+        default y
+        help
+            Fetch the HA TTS WAV and play it through the DAC, mixed over music.
+            Non-WAV replies fall back to the reply media_player, if set.
+    config JOHAN2_TTS_VOLUME
+        int "Direct reply volume (percent)"
+        range 0 100
+        default 70
+    config JOHAN2_HOMEDASH_TRANSCRIPT_URL
+        string "HomeDash proxy URL to show what Assist heard (blank disables)"
+        default ""
+        help
+            Example: http://bakkieplus:8767/transcript. The HomeDash proxy shows
+            the recognised text on its wall display.
+    config JOHAN2_MIC_GAIN
+        int "Microphone PCM gain for Assist"
+        range 1 32
+        default 16
 endmenu

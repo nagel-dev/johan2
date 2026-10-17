@@ -135,5 +135,70 @@ threshold temporarily overrides it with white; brightness follows RMS level with
 a short decay, capped at 35% per colour. Keep quiet for the first second after
 startup while ambient noise is calibrated. In silence it returns to music colours
 or turns off when no music is playing.
-The microphone is only measured locally; samples are not transmitted or stored.
+Without an HA token the microphone is measured locally only. Enabling Assist
+streams microphone PCM over the LAN to Home Assistant for wake-word detection;
+HA Cloud processes command audio after the wake word. No recordings are stored
+by this firmware.
 Physical microphone/LED operation still needs verification after flashing.
+
+### Hey Jarvis via Home Assistant Assist
+
+1. Install/start the openWakeWord app on HA OS and add its discovered Wyoming
+   integration. Edit the preferred voice assistant, use the three-dot menu to add
+   a streaming wake word, and choose **openWakeWord → hey jarvis**. Keep your
+   working HA Cloud speech-to-text and conversation agent settings. The firmware
+   uses the preferred pipeline; `JOHAN2_HA_PIPELINE` can select another pipeline ID.
+2. Create a long-lived access token in your HA profile under Security. Run
+   `./scripts/idf.sh menuconfig`, open **Johan2 Player Configuration**, and set
+   **Home Assistant long-lived access token**. Leave the WebSocket URL at
+   `ws://haos.home:8123/api/websocket`. Save to the default `sdkconfig` file,
+   which is ignored by Git. Do not paste the token into chat or tracked files.
+   The optional pipeline ID stays blank when using your preferred assistant.
+   To hear replies, set **HA media_player entity for spoken replies** to the HA
+   entity ID of this player's Music Assistant entity (`media_player.…`) and select
+   a text-to-speech provider (such as Piper) in your HA assistant.
+3. Run `./scripts/idf.sh build`, then flash using your actual serial port.
+4. Say **“Hey Jarvis, volgend nummer op Johan2 AUX”**. The explicit player name
+   matters: this custom WebSocket client has no HA device/area registration.
+
+The default endpoint is `ws://haos.home:8123/api/websocket`
+(`JOHAN2_HA_WS_URL`). This is plain LAN WebSocket traffic, including the token.
+Microphone audio is 16 kHz / mono / signed 16-bit little-endian PCM. The mic task
+never waits for networking: a separate bounded queue and task handle authentication,
+streaming, reconnects, pipeline errors, and automatic rearming. The capture stream
+is independent of the LED noise gate. `JOHAN2_MIC_GAIN` defaults to 8 and can be
+adjusted if speech clips or is too quiet.
+
+Music retains the coloured LED effect, with white microphone activity as before.
+After wake-word detection, playback is reduced to one fifth of the current digital
+volume until the command completes, then restored without changing the player
+volume setting. There is no acoustic echo cancellation: loud speaker audio can
+still impair wake-word detection. When `JOHAN2_HA_REPLY_PLAYER` is set, the pipeline
+continues through text-to-speech. Its generated audio is forwarded to that HA
+media player using `media_player.play_media` with `announce: true`; Music Assistant
+handles playback and restoration of the music queue through Sendspin. Firmware
+ducking ends before the reply so speech is not attenuated. Capture stays stopped
+while the announcement service request is pending, with a 90-second watchdog and
+no automatic announcement retry (to avoid duplicate replies). Without a reply
+player configured, commands still work but there are no spoken answers.
+
+The selected HA conversation agent must be allowed to see relevant entities. For
+“is de achterdeur open?”, expose the door sensor to Assist and give it a clear
+name/alias. Audio routing cannot supply entity state the agent cannot access.
+
+Logs report connection/authentication, wake detection and generic errors, without
+tokens, recognized text or server payloads. A rejected token disables Assist until
+reboot. Missing token leaves the player and microphone LED test functional.
+Firmware compilation and host protocol tests do not verify physical wake-word
+recognition, LAN connectivity or playback quality.
+
+Host protocol check (requires the managed ArduinoJson component):
+
+```sh
+c++ -std=c++17 -Wall -Wextra -Werror -I main \
+  -I managed_components/bblanchon__arduinojson/src \
+  tests/assist_protocol_test.cpp -o /tmp/johan2-assist-protocol-test
+/tmp/johan2-assist-protocol-test
+```
+
+Protocol reference: <https://developers.home-assistant.io/docs/voice/pipelines/>.
