@@ -27,6 +27,7 @@ private:
     bool send_text(const std::string& text);
     void reset_audio();
     void forward_to_player();
+    void cancel_command(bool stop_playback);
     void publish_state(const char* state, bool force = false);
     TtsPlayer tts_;
     bool direct_playing_{false};
@@ -50,4 +51,5 @@ private:
     bool remote_start_pending_{false};
     const char* assist_state_{"offline"};
     int64_t state_refresh_at_{0};
+    int64_t stop_retry_at_{0};
 };

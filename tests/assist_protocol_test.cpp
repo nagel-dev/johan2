@@ -131,5 +131,15 @@ int main() {
     assert(cancel.running);
     assert(cancel.receive(R"({"id":3,"type":"event","event":{"type":"error","data":{"code":"stt-no-text-recognized"}}})") == Event::Error);
     assert(cancel.error_code() == "stt-no-text-recognized");
+    deserializeJson(command, cancel.begin_stop("pl"));
+    assert(command["id"] == 4 && command["start_stage"] == "stt" && command["end_stage"] == "stt" && cancel.stop_running);
+    cancel.receive(R"({"id":4,"type":"event","event":{"type":"run-start","data":{"runner_data":{"stt_binary_handler_id":9}}}})");
+    assert(cancel.stop_streaming && cancel.active_handler() == 9);
+    assert(cancel.receive(R"({"id":4,"type":"event","event":{"type":"stt-end","data":{"stt_output":{"text":"stop"}}}})") == Event::StopTranscript);
+    assert(cancel.stop_transcript() == "stop" && !cancel.stop_streaming);
+    cancel.receive(R"({"id":4,"type":"event","event":{"type":"run-end"}})");
+    assert(!cancel.stop_running);
+    deserializeJson(command, cancel.cancel_stop());
+    assert(command["type"] == "unsubscribe_events");
     std::cout << "Assist protocol tests passed\n";
 }

@@ -15,6 +15,8 @@ public:
     void init(AudioOutput& audio);
     // Returns false if a request is already running.
     bool start(const std::string& url);
+    // Stops playback early; poll() then reports Ok.
+    void cancel() { if (busy_.load()) cancel_.store(true); }
     // Returns the finished request's result once, then None.
     Result poll() { return static_cast<Result>(result_.exchange(None)); }
     // Unsupported: nothing was played, so the caller may fall back. Failed: audio may have played.
@@ -27,6 +29,7 @@ private:
     AudioOutput* audio_{nullptr};
     TaskHandle_t task_{nullptr};
     std::atomic<bool> busy_{false};
+    std::atomic<bool> cancel_{false};
     std::atomic<int> result_{None};
     std::string url_;
     // Decoder and resampler state (task only).

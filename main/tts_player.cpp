@@ -26,6 +26,7 @@ bool TtsPlayer::start(const std::string& url) {
     if (!busy_.compare_exchange_strong(expected, true)) return false;
     url_ = url;
     result_.store(None);
+    cancel_.store(false);
     xTaskNotifyGive(task_);
     return true;
 }
@@ -151,10 +152,12 @@ TtsPlayer::Result TtsPlayer::play() {
         } else {
             static uint8_t buffer[2048];
             bool ok = true;
+            bool cancelled = false;
             size_t sniffed = 0;
             while (true) {
                 const int n = esp_http_client_read(client, reinterpret_cast<char*>(buffer + sniffed),
                                                    sizeof(buffer) - sniffed);
+                if (cancel_.load()) { cancelled = true; break; }
                 if (n < 0) { ok = false; break; }
                 if (n == 0) {
                     ok = esp_http_client_is_complete_data_received(client);
@@ -178,7 +181,9 @@ TtsPlayer::Result TtsPlayer::play() {
                 if (!decode(buffer, sniffed)) { ok = false; break; }
                 sniffed = 0;
             }
-            if (ok && started_) {
+            if (cancelled) {
+                result = Ok;
+            } else if (ok && started_) {
                 flush();
                 result = Ok;
             } else if (!started_) {
@@ -192,6 +197,7 @@ TtsPlayer::Result TtsPlayer::play() {
         ESP_LOGW(TAG, "Reply fetch failed to connect");
     }
     if (started_) audio_->tts_end();
+    cancel_.store(false);
     if (decoder_) esp_audio_simple_dec_close(decoder_);
     decoder_ = nullptr;
     free(decoded_);

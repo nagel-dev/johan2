@@ -113,6 +113,25 @@ void AssistClient::publish_state(const char* state, bool force) {
 #endif
 }
 
+// Spoken "stop"/"cancel" is never forwarded to the conversation agent.
+static bool is_stop_phrase(const std::string& text) {
+    std::string word;
+    for (unsigned char c : text) if (isalnum(c)) word += static_cast<char>(tolower(c));
+    static const char* const phrases[] = {"stop", "stopp", "cancel", "annuleer", "annuleren", "laatmaar", "stil"};
+    for (const char* phrase : phrases) if (word == phrase) return true;
+    return false;
+}
+
+void AssistClient::cancel_command(bool stop_playback) {
+    remote_start_pending_ = false;
+    reset_audio();
+    if (stop_playback && direct_playing_) tts_.cancel();
+    if (protocol_.stop_running && !send_text(protocol_.cancel_stop())) transport_failed_.store(true);
+    if (protocol_.running && !send_text(protocol_.cancel_run())) transport_failed_.store(true);
+    retry_at_ = 0;
+    publish_state("idle");
+}
+
 void AssistClient::reset_audio() {
     accepting_.store(false);
     command_active_.store(false);
@@ -172,7 +191,7 @@ void AssistClient::run() {
                 protocol_.reset();
                 ESP_LOGI(TAG, "%s", message.type == WEBSOCKET_EVENT_CONNECTED ? "HA connected" : "HA disconnected");
             } else if (message.text) {
-                const bool was_streaming = protocol_.streaming;
+                const bool was_streaming = protocol_.any_streaming();
                 const auto result = protocol_.receive(message.text);
                 free(message.text);
                 if (result == AssistProtocol::Event::Authenticate) {
@@ -211,13 +230,10 @@ void AssistClient::run() {
                         ESP_LOGI(TAG, "Remote wake requested");
                     }
                 } else if (result == AssistProtocol::Event::RemoteCancel) {
-                    if ((protocol_.command_active || remote_start_pending_ || strcmp(assist_state_, "starting") == 0) &&
-                        !direct_playing_ && !protocol_.announcement_pending) {
-                        remote_start_pending_ = false;
-                        reset_audio();
-                        if (protocol_.running && !send_text(protocol_.cancel_run())) transport_failed_.store(true);
-                        retry_at_ = 0;
-                        publish_state("idle");
+                    if (protocol_.command_active || remote_start_pending_ || strcmp(assist_state_, "starting") == 0 ||
+                        direct_playing_) {
+                        ESP_LOGI(TAG, "Cancelled by button");
+                        cancel_command(true);
                     }
                 } else if (result == AssistProtocol::Event::Wake) {
                     wake_at_ = conversation_last_ = esp_timer_get_time();
@@ -232,9 +248,21 @@ void AssistClient::run() {
                 } else if (result == AssistProtocol::Event::Transcript) {
                     publish_state("processing");
                     ESP_LOGI(TAG, "Heard: %s", protocol_.transcript().c_str());
+                    if (is_stop_phrase(protocol_.transcript())) {
+                        ESP_LOGI(TAG, "Cancelled by voice");
+                        cancel_command(false);
+                        command_active_.store(false);
+                        continue;
+                    }
                     if (CONFIG_JOHAN2_HOMEDASH_TRANSCRIPT_URL[0]) {
                         auto* text = new std::string(protocol_.transcript());
                         if (xTaskCreate(post_transcript, "transcript", 4096, text, 3, nullptr) != pdPASS) delete text;
+                    }
+                } else if (result == AssistProtocol::Event::StopTranscript) {
+                    ESP_LOGI(TAG, "Heard while busy: %s", protocol_.stop_transcript().c_str());
+                    if (is_stop_phrase(protocol_.stop_transcript())) {
+                        ESP_LOGI(TAG, "Cancelled by voice while busy");
+                        cancel_command(true);
                     }
                 } else if (result == AssistProtocol::Event::SpeechReady) {
                     // Unduck before Sendspin receives the answer audio. HA/MA manages
@@ -265,13 +293,15 @@ void AssistClient::run() {
                     retry_at_ = std::max(retry_at_, esp_timer_get_time() + (result == AssistProtocol::Event::Error ? 10000000 : 250000));
                     if (result == AssistProtocol::Event::Error) ESP_LOGW(TAG, "Assist run failed: %s", protocol_.error_code().c_str());
                 }
-                if (!was_streaming && protocol_.streaming) {
+                const bool streaming = protocol_.any_streaming();
+                if (!was_streaming && streaming) {
                     xQueueReset(audio_queue_);
                     accepting_.store(true);
-                }
-                if (was_streaming && !protocol_.streaming) {
+                } else if (was_streaming && !streaming) {
                     accepting_.store(false);
                     xQueueReset(audio_queue_);
+                } else if (protocol_.stop_streaming && !transport_failed_.load()) {
+                    accepting_.store(true); // reset_audio() above must not silence the stop listener
                 }
                 command_active_.store(protocol_.command_active);
             }
@@ -296,6 +326,16 @@ void AssistClient::run() {
                 publish_state("error");
             }
         }
+        // Keep a short "stop" listener alive while the answer is processed or spoken.
+        const bool busy = protocol_.authenticated && !protocol_.announcement_pending &&
+                          ((protocol_.running && !protocol_.streaming && strcmp(assist_state_, "processing") == 0) || direct_playing_);
+        if (busy && !protocol_.stop_running && now >= stop_retry_at_) {
+            stop_retry_at_ = now + 300000;
+            if (!send_text(protocol_.begin_stop(CONFIG_JOHAN2_HA_PIPELINE))) transport_failed_.store(true);
+        } else if (!busy && protocol_.stop_running) {
+            if (!send_text(protocol_.cancel_stop())) transport_failed_.store(true);
+            if (!protocol_.streaming) { accepting_.store(false); xQueueReset(audio_queue_); }
+        }
         if (protocol_.authenticated && !protocol_.running && !protocol_.announcement_pending && !direct_playing_ && now >= retry_at_) {
             reset_audio();
             run_deadline_ = now + 310000000;
@@ -314,7 +354,7 @@ void AssistClient::run() {
         Audio block;
         for (int n = 0; n < 4 && accepting_.load() && xQueueReceive(audio_queue_, &block, 0) == pdTRUE; ++n) {
             uint8_t packet[1 + SAMPLES * 2];
-            packet[0] = protocol_.handler;
+            packet[0] = protocol_.active_handler();
             for (size_t i = 0; i < block.count; ++i) {
                 const uint16_t sample = static_cast<uint16_t>(block.samples[i]);
                 packet[1 + i * 2] = sample & 0xff;

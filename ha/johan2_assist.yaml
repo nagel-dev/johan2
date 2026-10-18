@@ -32,7 +32,7 @@ script:
           entity_id: input_button.johan2_assist_start
   johan2_assist_cancel:
     alias: Johan2 - cancel listening
-    description: Cancel a pending/listening command; does not stop already playing TTS.
+    description: Cancel a pending/listening command or stop a spoken reply.
     mode: single
     sequence:
       - service: input_button.press

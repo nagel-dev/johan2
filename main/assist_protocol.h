@@ -5,7 +5,7 @@
 // HA Assist wire state, kept independent of ESP-IDF so it can be tested on a host.
 class AssistProtocol {
 public:
-    enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, SyncError, Transcript, SpeechReady, PlaybackAccepted, PlaybackFailed, Finished, Error, AuthInvalid };
+    enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, SyncError, Transcript, SpeechReady, StopTranscript, PlaybackAccepted, PlaybackFailed, Finished, Error, AuthInvalid };
     bool authenticated = false;
     bool running = false;
     bool streaming = false;
@@ -14,9 +14,18 @@ public:
     int run_id = 0;
     bool announcement_pending = false;
     int announcement_id = 0;
+    // Short STT-only run that listens for "stop" while the main run is processing or replying.
+    bool stop_running = false;
+    bool stop_streaming = false;
+    uint8_t stop_handler = 0;
+    bool any_streaming() const { return streaming || stop_streaming; }
+    uint8_t active_handler() const { return stop_streaming ? stop_handler : handler; }
 
     void reset() {
         authenticated = running = streaming = command_active = false;
+        stop_running = stop_streaming = false;
+        stop_handler = 0;
+        stop_id_ = 0;
         handler = 0;
         control_id_ = state_id_ = 0;
         last_start_.clear();
@@ -46,6 +55,34 @@ public:
         speech_forwarded_ = false;
         running = true;
         streaming = command_active = false;
+        std::string result;
+        serializeJson(doc, result);
+        return result;
+    }
+    std::string begin_stop(const char* pipeline) {
+        JsonDocument doc;
+        doc["id"] = stop_id_ = ++next_id_;
+        doc["type"] = "assist_pipeline/run";
+        doc["start_stage"] = "stt";
+        doc["end_stage"] = "stt";
+        doc["timeout"] = 20;
+        doc["input"]["sample_rate"] = 16000;
+        doc["input"]["timeout"] = 10;
+        doc["input"]["noise_suppression_level"] = 2;
+        doc["input"]["auto_gain_dbfs"] = 31;
+        if (pipeline && *pipeline) doc["pipeline"] = pipeline;
+        stop_running = true;
+        stop_streaming = false;
+        std::string result;
+        serializeJson(doc, result);
+        return result;
+    }
+    std::string cancel_stop() {
+        JsonDocument doc;
+        doc["id"] = ++next_id_;
+        doc["type"] = "unsubscribe_events";
+        doc["subscription"] = stop_id_;
+        stop_running = stop_streaming = false;
         std::string result;
         serializeJson(doc, result);
         return result;
@@ -113,6 +150,30 @@ public:
             if (cancel) return Event::RemoteCancel;
             return start ? Event::RemoteStart : Event::None;
         }
+        if (stop_running && stop_id_ && (doc["id"] | -1) == stop_id_) {
+            if (type == "result" && doc["success"] == false) {
+                stop_running = stop_streaming = false;
+                return Event::None;
+            }
+            if (type != "event") return Event::None;
+            const std::string kind = doc["event"]["type"] | "";
+            if (kind == "run-start") {
+                const auto id = doc["event"]["data"]["runner_data"]["stt_binary_handler_id"];
+                if (id.is<int>() && id.as<int>() >= 1 && id.as<int>() <= 255) {
+                    stop_handler = id.as<uint8_t>();
+                    stop_streaming = true;
+                } else {
+                    stop_running = false;
+                }
+            } else if (kind == "stt-end") {
+                stop_streaming = false;
+                stop_transcript_ = doc["event"]["data"]["stt_output"]["text"] | "";
+                if (!stop_transcript_.empty()) return Event::StopTranscript;
+            } else if (kind == "run-end" || kind == "error") {
+                stop_running = stop_streaming = false;
+            }
+            return Event::None;
+        }
         if (!running || (doc["id"] | -1) != run_id) return Event::None;
         if (type == "result" && doc["success"] == false) {
             error_code_ = doc["error"]["code"] | "unknown";
@@ -165,6 +226,7 @@ public:
     }
     // Absolute http(s) URL of the generated reply, or empty. Does not consume the reply.
     const std::string& transcript() const { return transcript_; }
+    const std::string& stop_transcript() const { return stop_transcript_; }
     std::string reply_url(const char* websocket_url) const {
         // media_id is usually media-source://; the plain url is what HTTP can fetch.
         return resolve_media(response_url_.empty() ? response_media_ : response_url_, websocket_url, false);
@@ -223,6 +285,8 @@ private:
     std::string response_media_;
     std::string response_url_;
     std::string transcript_;
+    std::string stop_transcript_;
+    int stop_id_ = 0;
     std::string error_code_;
     std::string response_mime_;
     void finish() { running = streaming = command_active = false; }
