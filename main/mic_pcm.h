@@ -30,7 +30,7 @@ public:
         }
         return filtered;
     }
-    static int16_t quantize(float filtered, int gain) {
+    static int16_t quantize(float filtered, float gain) {
         return static_cast<int16_t>(std::clamp(filtered * gain, -32768.0f, 32767.0f));
     }
     int16_t convert(int32_t word, int gain) {

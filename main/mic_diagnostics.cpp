@@ -23,6 +23,7 @@ uint8_t* buffer = nullptr; // Allocated once; never freed while capture can acce
 size_t captured = 0;
 unsigned read_errors = 0;
 uint32_t max_processing_us = 0;
+float minimum_gain = 0, maximum_gain = 0;
 int64_t started = 0, last_block = 0, max_interval = 0, elapsed = 0;
 void le16(uint8_t* p, uint16_t n) { p[0] = n; p[1] = n >> 8; }
 void le32(uint8_t* p, uint32_t n) { le16(p, n); le16(p + 2, n >> 16); }
@@ -38,6 +39,7 @@ esp_err_t record(httpd_req_t* req) {
     captured = 0;
     read_errors = 0;
     max_processing_us = 0;
+    minimum_gain = maximum_gain = 0;
     last_block = max_interval = elapsed = 0;
     started = esp_timer_get_time();
     state.store(Recording, std::memory_order_release);
@@ -62,14 +64,20 @@ esp_err_t record(httpd_req_t* req) {
 #else
     constexpr int denoise = 0, delay_samples = 0;
 #endif
-    char metrics[384];
+#ifdef CONFIG_JOHAN2_MIC_AUTO_GAIN
+    constexpr int agc = 1;
+#else
+    constexpr int agc = 0;
+#endif
+    char metrics[512];
     snprintf(metrics, sizeof(metrics),
-             "rms_dbfs=%.1f; peak_dbfs=%.1f; clipped=%u; read_errors=%u; elapsed_ms=%lld; max_block_interval_ms=%.1f; gain=%d; highpass_hz=%d; profile_denoise=%d; delay_samples=%d; max_processing_us=%u",
+             "rms_dbfs=%.1f; peak_dbfs=%.1f; clipped=%u; read_errors=%u; elapsed_ms=%lld; max_block_interval_ms=%.1f; gain=%d; highpass_hz=%d; profile_denoise=%d; delay_samples=%d; max_processing_us=%u; agc=%d; max_gain=%d; effective_gain_min=%.3f; effective_gain_max=%.3f",
              20 * std::log10(std::max(rms, 0.000001) / 32768),
              20 * std::log10(std::max(double(peak), 0.000001) / 32768),
              unsigned(clipped), read_errors, static_cast<long long>(elapsed / 1000),
              max_interval / 1000.0, CONFIG_JOHAN2_MIC_GAIN, CONFIG_JOHAN2_MIC_HIGHPASS_HZ,
-             denoise, delay_samples, unsigned(max_processing_us));
+             denoise, delay_samples, unsigned(max_processing_us), agc, CONFIG_JOHAN2_MIC_MAX_GAIN,
+             minimum_gain, maximum_gain);
     const size_t frame_bytes = compare ? 8 : 2;
     const size_t data_bytes = captured * frame_bytes;
     uint8_t header[44]{};
@@ -114,11 +122,16 @@ void mic_diagnostics::start() {
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri));
     ESP_LOGI("mic_diag", "On-demand 15 s microphone recording: HTTP port 8081 /mic.wav");
 }
-void mic_diagnostics::feed(const int32_t* raw, const int16_t* pcm, size_t count, bool read_error, uint32_t processing_us) {
+void mic_diagnostics::feed(const int32_t* raw, const int16_t* pcm, size_t count, bool read_error, uint32_t processing_us, float effective_gain) {
     if (state.load(std::memory_order_acquire) != Recording) return;
     if (read_error) ++read_errors;
     max_processing_us = std::max(max_processing_us, processing_us);
     if (!count) return;
+    if (!captured) minimum_gain = maximum_gain = effective_gain;
+    else {
+        minimum_gain = std::min(minimum_gain, effective_gain);
+        maximum_gain = std::max(maximum_gain, effective_gain);
+    }
     const int64_t now = esp_timer_get_time();
     if (last_block) max_interval = std::max(max_interval, now - last_block);
     last_block = now;
@@ -140,5 +153,5 @@ void mic_diagnostics::feed(const int32_t* raw, const int16_t* pcm, size_t count,
 }
 #else
 void mic_diagnostics::start() {}
-void mic_diagnostics::feed(const int32_t*, const int16_t*, size_t, bool, uint32_t) {}
+void mic_diagnostics::feed(const int32_t*, const int16_t*, size_t, bool, uint32_t, float) {}
 #endif

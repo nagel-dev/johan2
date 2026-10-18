@@ -253,7 +253,8 @@ iteration. The original `/mic.wav` endpoint remains mono 16-bit PCM.
 
 The left channel has no firmware DC removal or gain. It will normally sound much
 quieter than the right channel: gain 16 adds about 24 dB, while the current
-local gain 4 adds about 12 dB. Compare
+fixed gain 4 adds about 12 dB. With automatic gain enabled the level difference
+varies; consult the effective gain metadata. Compare
 spectra after accounting for gain, the first-order DC filter (pole
 255/256, approximately 10 Hz cutoff at 16 kHz), and the configurable rumble
 high-pass filter (100 Hz by default). Both channels are downstream of
@@ -338,10 +339,10 @@ the project. In an offline trial on mic-18, the known noisy seconds 5–8 fell b
 9.7 dB RMS and the louder seconds 0–4 fell by 0.8 dB. These measurements do not
 establish speech recognition or perceptual quality.
 
-### Current local microphone settings (2026-10-18)
+### Accepted fixed-gain microphone baseline (2026-10-18)
 
 The user accepted the filtered quiet recording and subsequently confirmed improved
-music-on recording after reducing gain from 16 to 4. Reproduce the current setup
+music-on recording after reducing gain from 16 to 4. Reproduce this fixed-gain reference
 through menuconfig or ignored local sdkconfig settings:
 
 ```ini
@@ -349,6 +350,7 @@ CONFIG_JOHAN2_MIC_GAIN=4
 CONFIG_JOHAN2_MIC_HIGHPASS_HZ=180
 CONFIG_JOHAN2_MIC_PROFILE_DENOISE=y
 CONFIG_JOHAN2_MIC_DIAGNOSTICS=y
+# CONFIG_JOHAN2_MIC_AUTO_GAIN is not set
 ```
 
 Repository defaults remain gain 16 / HP100 with profile suppression and HTTP
@@ -357,3 +359,43 @@ LED duplicate-frame change is part of the firmware; its contribution to the
 listening improvement is unproven. Build with `./scripts/idf.sh build` after
 applying local settings, then flash the intended device. Listening feedback does
 not establish clipping-free operation at every music level or Assist recognition.
+
+### Dynamic microphone gain (current local trial)
+
+`JOHAN2_MIC_AUTO_GAIN` adds a small capture-task gain controller after noise
+suppression and before PCM quantization. It is off by default; the current local
+trial enables it with baseline gain 4 and maximum gain 16:
+
+```ini
+CONFIG_JOHAN2_MIC_AUTO_GAIN=y
+CONFIG_JOHAN2_MIC_GAIN=4
+CONFIG_JOHAN2_MIC_MAX_GAIN=16
+```
+
+The controller measures the already captured block's peak and RMS. It limits the
+very first sample of unexpected peaks to 85% full scale (about −1.4 dBFS), allows
+gain below unity when necessary, and holds a peak envelope with a 400 ms decay.
+Level-driven reduction has a 10 ms time constant; gain recovery has a 1.5 s time
+constant. RMS tracking uses 80 ms smoothing and targets roughly −18 dBFS, within
+the maximum and peak limits. Below pre-gain RMS 32 (about −60 dBFS), gain returns
+only to the baseline rather than rising toward the maximum. This energy threshold
+is not a voice classifier: music and voice can both open it. A 300 ms activity
+hold spans short word gaps before returning to the baseline. The block peak ceiling
+always takes priority, including over the quiet baseline.
+
+The controller introduces no additional block delay, uses fixed scratch storage
+outside the microphone task's 4 KB stack, and performs no allocation or networking.
+The profile suppressor's existing 32 ms delay is unchanged. Disable AUTO_GAIN to
+restore exact fixed-gain behavior; the profile model remains normalized before
+gain and does not need recalibration. AGC controls level, not the voice/music ratio,
+and cannot restore audio clipped in the microphone or remove acoustic echo.
+
+`X-Mic-Metrics` now reports `agc`, `max_gain` and the minimum/maximum block-end
+`effective_gain` during capture; `gain` remains the configured fixed/quiet baseline.
+These extrema are block-end observations, not exact per-sample gain extrema.
+Verify same-volume music clipping and quiet speech recognition on hardware.
+
+```sh
+c++ -O2 -std=c++17 -Wall -Wextra -Werror -I main tests/mic_gain_control_test.cpp -o /tmp/johan2-gain-control-test
+/tmp/johan2-gain-control-test
+```

@@ -3,6 +3,7 @@
 #include "assist_client.h"
 #include "mic_diagnostics.h"
 #include "mic_pcm.h"
+#include "mic_gain_control.h"
 #if CONFIG_JOHAN2_MIC_PROFILE_DENOISE
 #include "mic_denoise.h"
 #endif
@@ -268,6 +269,13 @@ void AudioOutput::microphone_task(void* context) {
     int32_t samples[256];
     int16_t pcm[256];
     MicPcm converter(CONFIG_JOHAN2_MIC_HIGHPASS_HZ);
+#ifdef CONFIG_JOHAN2_MIC_AUTO_GAIN
+    constexpr bool auto_gain = true;
+#else
+    constexpr bool auto_gain = false;
+#endif
+    MicGainControl gain_control(auto_gain, CONFIG_JOHAN2_MIC_GAIN, CONFIG_JOHAN2_MIC_MAX_GAIN);
+    static float filtered_pcm[256]; // Capture-task scratch; keep the 4 KB stack bounded.
 #if CONFIG_JOHAN2_MIC_PROFILE_DENOISE
     // Fixed storage in BSS: the FFT buffers must not consume the 4 KB task stack.
     static MicDenoise denoiser(true, CONFIG_JOHAN2_MIC_HIGHPASS_HZ);
@@ -296,10 +304,11 @@ void AudioOutput::microphone_task(void* context) {
 #if CONFIG_JOHAN2_MIC_PROFILE_DENOISE
             filtered = denoiser.process(filtered);
 #endif
-            pcm[i] = MicPcm::quantize(filtered, CONFIG_JOHAN2_MIC_GAIN);
+            filtered_pcm[i] = filtered;
         }
+        gain_control.process(filtered_pcm, pcm, count);
         const uint32_t processing_us = esp_timer_get_time() - processing_started;
-        mic_diagnostics::feed(samples, pcm, count, err != ESP_OK, processing_us);
+        mic_diagnostics::feed(samples, pcm, count, err != ESP_OK, processing_us, gain_control.gain());
         if (self.assist_) self.assist_->submit(pcm, count);
         // INMP441 supplies signed 24-bit samples in the high bits of each 32-bit slot.
         // Remove DC before measuring RMS, so a static offset cannot light the LED.
