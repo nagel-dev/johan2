@@ -236,7 +236,8 @@ size_t AudioOutput::on_audio_write(uint8_t* data, size_t length, uint32_t timeou
     const size_t bytes = std::min(length, sizeof(scratch_)) & ~size_t{3};
     int gain = muted_.load() ? 0 : volume_.load();
     const bool tts = tts_running_.load();
-    if (tts || (assist_ && assist_->command_active())) gain /= 5;
+    if (assist_ && assist_->command_active()) gain = 0;
+    else if (tts) gain /= 5;
     for (size_t i = 0; i < bytes / 2; ++i) {
         int16_t sample;
         memcpy(&sample, data + i * 2, sizeof(sample));

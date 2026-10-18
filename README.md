@@ -170,9 +170,10 @@ is independent of the LED noise gate. `JOHAN2_MIC_GAIN` defaults to 16 and can b
 adjusted if speech clips or is too quiet.
 
 Music retains the coloured LED effect, with white microphone activity as before.
-After wake-word detection, playback is reduced to one fifth of the current digital
-volume until the command completes, then restored without changing the player
-volume setting. There is no acoustic echo cancellation: loud speaker audio can
+After wake-word detection or remote command activation, music is digitally muted
+while the command is active, including capture and processing. It is restored
+before the spoken reply, cancellation or completion without changing the player
+volume setting. During direct spoken replies, music remains at one fifth volume. There is no acoustic echo cancellation: loud speaker audio can
 still impair wake-word detection. When `JOHAN2_HA_REPLY_PLAYER` is set, the pipeline
 continues through text-to-speech. Its generated audio is forwarded to that HA
 media player using `media_player.play_media` with `announce: true`; Music Assistant
