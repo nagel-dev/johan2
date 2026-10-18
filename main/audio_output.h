@@ -42,6 +42,8 @@ private:
     void set_led(uint8_t r, uint8_t g, uint8_t b);
     rmt_channel_handle_t led_chan_{nullptr};
     rmt_encoder_handle_t led_enc_{nullptr};
+    uint32_t led_last_color_{0};
+    bool led_color_valid_{false};
     std::atomic<uint8_t> peak_{0};
     uint8_t led_level_{0};
     std::atomic<uint8_t> music_peak_{0};

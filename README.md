@@ -166,7 +166,7 @@ The default endpoint is `ws://haos.home:8123/api/websocket`
 Microphone audio is 16 kHz / mono / signed 16-bit little-endian PCM. The mic task
 never waits for networking: a separate bounded queue and task handle authentication,
 streaming, reconnects, pipeline errors, and automatic rearming. The capture stream
-is independent of the LED noise gate. `JOHAN2_MIC_GAIN` defaults to 8 and can be
+is independent of the LED noise gate. `JOHAN2_MIC_GAIN` defaults to 16 and can be
 adjusted if speech clips or is too quiet.
 
 Music retains the coloured LED effect, with white microphone activity as before.
@@ -202,3 +202,158 @@ c++ -std=c++17 -Wall -Wextra -Werror -I main \
 ```
 
 Protocol reference: <https://developers.home-assistant.io/docs/voice/pipelines/>.
+
+### Temporary microphone recording diagnostics
+
+Enable `JOHAN2_MIC_DIAGNOSTICS` in `./scripts/idf.sh menuconfig`, build and flash.
+It is disabled by default; the current local sdkconfig enables it for investigation.
+While enabled, the device exposes an unauthenticated HTTP endpoint on port 8081;
+use it temporarily on a trusted LAN and disable it after testing.
+
+Start a fresh 15-second recording (replace DEVICE_IP with the device address):
+
+```sh
+curl --fail --max-time 30 -D mic-headers.txt -o mic.wav http://DEVICE_IP:8081/mic.wav
+```
+
+The request starts capture immediately. Keep music off, leave about three seconds
+of silence, speak a sentence nearby, pause, and repeat from your usual position.
+Do not say the wake word during this baseline test: Assist remains active and
+could otherwise change music volume or play a reply during capture.
+The WAV contains the same post-DC-removal, post-gain, clipped 16 kHz mono PCM
+submitted to Assist, including periods when Assist is not accepting audio. It is
+before Home Assistant processing and independent of the LED noise threshold.
+1,920,000 bytes are reserved in PSRAM on first use and reused. No audio is written
+to flash; completed recordings are erased after the download attempt.
+
+The `X-Mic-Metrics` response header reports whole-recording RMS and peak in dBFS,
+the number of samples at either clipping rail, I2S read errors/timeouts, elapsed
+capture time, maximum interval between captured blocks, and configured gain.
+Clipped samples indicate saturated output, not necessarily microphone hardware
+clipping. RMS includes both silence and speech; inspect these sections separately
+when assessing background noise. Block intervals and read errors are clues to
+interruptions, not proof that the I2S DMA stream lost no samples. This diagnostic
+does not measure downstream Assist queue/network losses. A stalled capture returns
+an HTTP error rather than presenting incomplete audio as a complete recording.
+
+Build success does not verify microphone wiring, signal quality, or playback.
+The initial hardware smoke test downloaded a valid 15-second WAV with no reported
+read errors and 0.195% rail-clipped samples at gain 16; acoustic conditions were
+uncontrolled, so a deliberate silence/near/far speech test is still required.
+
+### Simultaneous raw/processed microphone comparison
+
+`http://DEVICE_IP:8081/mic-compare.wav` starts a 15-second, 16 kHz stereo,
+32-bit signed PCM recording. The left channel preserves each signed 32-bit I2S
+word exactly as delivered by the driver (24-bit microphone payload left-aligned;
+the low eight bits are not treated as microphone precision). The right channel
+contains the exact Assist int16 samples multiplied by 65536, preserving their
+level in 32-bit PCM. The two channels are captured in the same microphone task
+iteration. The original `/mic.wav` endpoint remains mono 16-bit PCM.
+
+The left channel has no firmware DC removal or gain. It will normally sound much
+quieter than the right channel: gain 16 adds about 24 dB, while the current
+local gain 4 adds about 12 dB. Compare
+spectra after accounting for gain, the first-order DC filter (pole
+255/256, approximately 10 Hz cutoff at 16 kHz), and the configurable rumble
+high-pass filter (100 Hz by default). Both channels are downstream of
+the microphone and I2S receiver; this comparison cannot on its own distinguish
+acoustic, microphone hardware, power, or I2S faults. Response level/clipping
+metrics still refer to the processed Assist channel.
+
+Source review against ESP-IDF 6.0.1 confirms Philips timing with a one-bit shift,
+32-bit slots, two physical slots per frame (64 BCLK cycles), left-slot receive,
+and signed conversion without an unsigned intermediate. This matches the
+[INMP441 I2S interface](https://www.invensense.com/wp-content/uploads/2015/02/INMP441.pdf),
+assuming the physical module is an INMP441 and its L/R pin is grounded.
+The conversion was extracted without changing its algorithm into `main/mic_pcm.h`.
+Host checks cover signed polarity, saturation, constant-offset decay and zero
+input; these checks do not verify physical timing or microphone quality:
+
+```sh
+c++ -std=c++17 -Wall -Wextra -Werror -I main tests/mic_pcm_test.cpp -o /tmp/johan2-mic-pcm-test
+/tmp/johan2-mic-pcm-test
+```
+
+### Microphone rumble filter
+
+`JOHAN2_MIC_HIGHPASS_HZ` defaults to 100 Hz (range 0–300 Hz). A second-order
+Butterworth high-pass runs in the microphone task after the existing DC removal
+and before gain/saturation. At 100 Hz cutoff it attenuates 30 Hz by roughly 21 dB
+and 50 Hz by roughly 12 dB; 500 Hz and 1 kHz remain within 0.2 dB in host tests.
+It can reduce voice bass and does not repair microphone, contact or I2S faults.
+Setting it to 0 restores the original DC-removal-only path for comparison.
+
+Assist, `/mic.wav`, and the right channel of `/mic-compare.wav` all receive the
+filtered PCM. The comparison WAV's left channel remains untouched I2S data.
+`X-Mic-Metrics` includes `highpass_hz` alongside gain and clipping counts.
+Verify audible quality and speech recognition on hardware after flashing.
+
+### Experimental measured-profile noise suppression
+
+`JOHAN2_MIC_PROFILE_DENOISE` enables a soft spectral suppressor calibrated from
+user recordings mic-18 (noisy seconds 5–8 at HP100) and mic-27 (quiet seconds 3–9
+at HP180), both at gain 16. It is disabled by default and enabled in the current
+ignored local sdkconfig for a listening trial. No recordings are embedded or
+committed; `main/mic_noise_profile.h` contains only 257 power values. Generation
+corrects for the two high-pass responses and gain, targets only bins showing
+more than 6 dB excess over the quiet reference, and leaves bins above 2 kHz alone.
+The comparison is approximate: the two recordings were made at different times.
+
+The suppressor uses a 512-point FFT, sqrt-Hann windows with 50% overlap, soft
+power-based attenuation (maximum about 20 dB per targeted bin) and frequency/time
+smoothing. Clear signals above the stored noise floor receive less attenuation.
+It runs after HP/DC removal and before configurable gain and final clipping,
+using fixed capture-task storage (about 20 KB), no per-block allocation or
+networking, and a bounded FFT per 256 samples. Its 512-sample (32 ms) delay applies
+to Assist, `/mic.wav`, and the processed comparison channel. The raw comparison
+channel is untouched and leads the processed channel by 512 samples when enabled;
+account for this delay before comparing waveforms. Turning the option off
+restores the high-pass-only path with zero additional spectral-filter delay.
+
+Diagnostic metadata includes `profile_denoise`, `delay_samples` and
+`max_processing_us` (maximum measured DSP wall time per capture block during the
+recording). Read-error counts and intervals do not establish DMA continuity;
+a physical smoke test measured a maximum 7.928 ms DSP wall time for a 16 ms
+block, with no reported read errors. Playback coexistence and broader load
+conditions still require hardware checks. That uncontrolled recording contained
+90 clipped output samples; suppression does not guarantee clipping-free audio.
+This filter can attenuate weak speech or color voices and cannot restore audio
+lost through an intermittent connection or already clipped in the microphone.
+
+Host tests and the audition utility use the same C++ implementation as firmware:
+
+```sh
+c++ -O2 -std=c++17 -Wall -Wextra -Werror -I main tests/mic_denoise_test.cpp -o /tmp/johan2-mic-denoise-test
+/tmp/johan2-mic-denoise-test
+c++ -O2 -std=c++17 -Wall -Wextra -Werror -I main tools/filter_mic_pcm.cpp -o /tmp/johan2-filter-pcm
+```
+
+The utility accepts already HP/DC-filtered signed 16-bit mono PCM on stdin;
+arguments are high-pass cutoff and recording gain. Output contains 512 trailing
+flush samples. Remove its first 512 samples to align it to the input for audition
+and level comparison. `tools/make_mic_noise_profile.py` (requires numpy) regenerates
+the numeric header from the two original WAVs without copying source audio into
+the project. In an offline trial on mic-18, the known noisy seconds 5–8 fell by
+9.7 dB RMS and the louder seconds 0–4 fell by 0.8 dB. These measurements do not
+establish speech recognition or perceptual quality.
+
+### Current local microphone settings (2026-10-18)
+
+The user accepted the filtered quiet recording and subsequently confirmed improved
+music-on recording after reducing gain from 16 to 4. Reproduce the current setup
+through menuconfig or ignored local sdkconfig settings:
+
+```ini
+CONFIG_JOHAN2_MIC_GAIN=4
+CONFIG_JOHAN2_MIC_HIGHPASS_HZ=180
+CONFIG_JOHAN2_MIC_PROFILE_DENOISE=y
+CONFIG_JOHAN2_MIC_DIAGNOSTICS=y
+```
+
+Repository defaults remain gain 16 / HP100 with profile suppression and HTTP
+diagnostics disabled. Credentials and local sdkconfig are not committed. The
+LED duplicate-frame change is part of the firmware; its contribution to the
+listening improvement is unproven. Build with `./scripts/idf.sh build` after
+applying local settings, then flash the intended device. Listening feedback does
+not establish clipping-free operation at every music level or Assist recognition.

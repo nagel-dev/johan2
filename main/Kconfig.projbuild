@@ -73,4 +73,25 @@ menu "Johan2 Player Configuration"
         int "Microphone PCM gain for Assist"
         range 1 32
         default 16
+    config JOHAN2_MIC_HIGHPASS_HZ
+        int "Microphone rumble high-pass cutoff (Hz; 0 disables)"
+        range 0 300
+        default 100
+        help
+            Second-order Butterworth high-pass before Assist gain/clipping.
+            100 Hz suppresses low rumble. 0 retains the original DC removal.
+    config JOHAN2_MIC_PROFILE_DENOISE
+        bool "Enable Johan2 measured-profile microphone noise suppression"
+        default n
+        help
+            Experimental spectral suppression derived from noisy/quiet recordings.
+            Adds 32 ms fixed latency and uses about 20 KB fixed RAM.
+            Operates before gain/clipping; disable for unprocessed comparison.
+    config JOHAN2_MIC_DIAGNOSTICS
+        bool "Enable on-demand microphone WAV recording on HTTP port 8081"
+        default n
+        help
+            GET /mic.wav records 15 seconds of Assist-input PCM in PSRAM.
+            No authentication: enable temporarily on a trusted LAN only.
+            Audio is erased after download; no flash storage is used.
 endmenu

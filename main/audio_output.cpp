@@ -1,12 +1,17 @@
+#include "sdkconfig.h"
 #include "audio_output.h"
 #include "assist_client.h"
+#include "mic_diagnostics.h"
+#include "mic_pcm.h"
+#if CONFIG_JOHAN2_MIC_PROFILE_DENOISE
+#include "mic_denoise.h"
+#endif
 #include <algorithm>
 #include <cmath>
 #include "freertos/task.h"
 #include <cstring>
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "sdkconfig.h"
 
 static const char* TAG = "audio";
 static_assert(CONFIG_JOHAN2_I2S_BCLK != CONFIG_JOHAN2_I2S_LRCK &&
@@ -86,11 +91,17 @@ bool AudioOutput::sent(i2s_chan_handle_t, i2s_event_data_t* event, void* context
 }
 
 void AudioOutput::set_led(uint8_t r, uint8_t g, uint8_t b) {
+    // WS2812 retains its color: avoid periodic switching for unchanged values,
+    // especially repeated black frames while listening in silence.
+    const uint32_t color = (uint32_t(r) << 16) | (uint32_t(g) << 8) | b;
+    if (led_color_valid_ && color == led_last_color_) return;
     const uint8_t grb[3] = {g, r, b};
     rmt_transmit_config_t cfg{};
     if (rmt_transmit(led_chan_, led_enc_, grb, sizeof(grb), &cfg) == ESP_OK) {
         // RMT consumes the buffer asynchronously; retain it until transmission finishes.
         ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_chan_, 100));
+        led_last_color_ = color;
+        led_color_valid_ = true;
     }
 }
 
@@ -256,7 +267,11 @@ void AudioOutput::microphone_task(void* context) {
     auto& self = *static_cast<AudioOutput*>(context);
     int32_t samples[256];
     int16_t pcm[256];
-    float dc = 0;
+    MicPcm converter(CONFIG_JOHAN2_MIC_HIGHPASS_HZ);
+#if CONFIG_JOHAN2_MIC_PROFILE_DENOISE
+    // Fixed storage in BSS: the FFT buffers must not consume the 4 KB task stack.
+    static MicDenoise denoiser(true, CONFIG_JOHAN2_MIC_HIGHPASS_HZ);
+#endif
     // Learn ambient noise for about one second; keep quiet during startup.
     double noise = 0;
     size_t calibration_samples = 0;
@@ -265,18 +280,26 @@ void AudioOutput::microphone_task(void* context) {
         size_t bytes = 0;
         const esp_err_t err = i2s_channel_read(self.mic_rx_, samples, sizeof(samples), &bytes, 100);
         if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
+            mic_diagnostics::feed(nullptr, nullptr, 0, true);
             self.peak_.store(0);
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
         const size_t count = bytes / sizeof(samples[0]);
-        if (!count) continue;
-        for (size_t i = 0; i < count; ++i) {
-            const float sample = samples[i] / 65536.0f;
-            dc += (sample - dc) / 256.0f;
-            pcm[i] = static_cast<int16_t>(std::clamp((sample - dc) * CONFIG_JOHAN2_MIC_GAIN,
-                                                   -32768.0f, 32767.0f));
+        if (!count) {
+            mic_diagnostics::feed(nullptr, nullptr, 0, err != ESP_OK);
+            continue;
         }
+        const int64_t processing_started = esp_timer_get_time();
+        for (size_t i = 0; i < count; ++i) {
+            float filtered = converter.filter(samples[i]);
+#if CONFIG_JOHAN2_MIC_PROFILE_DENOISE
+            filtered = denoiser.process(filtered);
+#endif
+            pcm[i] = MicPcm::quantize(filtered, CONFIG_JOHAN2_MIC_GAIN);
+        }
+        const uint32_t processing_us = esp_timer_get_time() - processing_started;
+        mic_diagnostics::feed(samples, pcm, count, err != ESP_OK, processing_us);
         if (self.assist_) self.assist_->submit(pcm, count);
         // INMP441 supplies signed 24-bit samples in the high bits of each 32-bit slot.
         // Remove DC before measuring RMS, so a static offset cannot light the LED.

@@ -15,6 +15,7 @@
 #include "network.h"
 #include "audio_output.h"
 #include "assist_client.h"
+#include "mic_diagnostics.h"
 
 static const char* TAG = "johan2";
 
@@ -71,6 +72,7 @@ extern "C" void app_main() {
     static AssistClient assist;
     assist.start(&audio);
     audio.init(player, &assist);
+    mic_diagnostics::start();
     player.set_listener(&audio);
     player.update_volume(CONFIG_JOHAN2_INITIAL_VOLUME);
     client.set_network_provider(&network);
