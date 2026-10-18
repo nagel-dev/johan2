@@ -399,3 +399,51 @@ Verify same-volume music clipping and quiet speech recognition on hardware.
 c++ -O2 -std=c++17 -Wall -Wextra -Werror -I main tests/mic_gain_control_test.cpp -o /tmp/johan2-gain-control-test
 /tmp/johan2-gain-control-test
 ```
+
+### HomeDash listening state and remote wake
+
+Install `ha/johan2_assist.yaml` as `/config/packages/johan2_assist.yaml` on HA
+(packages enabled), validate the configuration and load its helpers/scripts.
+Enable `JOHAN2_HOMEDASH_SYNC` in Johan2 and `HOMEDASH_JOHAN2_ASSIST` in HomeDash;
+both default off and are enabled in the current local configurations. Rebuild and
+flash both devices. Existing HomeDash transcript posting is unchanged.
+
+Johan2 publishes `input_select.johan2_assist_state`: `idle` means wake-word armed,
+not command capture; `starting`, `listening`, `processing`, `speaking`, `error`
+and `offline` describe the command lifecycle. Wake-word detection/STT start sets
+listening, VAD/STT end sets processing, reply handling sets speaking, and completion
+rearms idle. HomeDash renders listening only for the reported listening state,
+clears an old transcript when a new capture begins, and uses its existing busy UI
+for starting/processing/speaking. Proxy reconnects receive the current entity state.
+HA and local UI watchdogs clear stale busy state after connection/device failures.
+Johan2 also reasserts its current state every 15 seconds, so a helper that loads
+after authentication or is reloaded later converges without a device reboot.
+
+Both `script.johan2_assist_start` and the existing HomeDash `assist` remote command
+start Johan2 STT directly, without a spoken wake word or a second HomeDash audio
+pipeline. The package scripts press `input_button.johan2_assist_start/cancel`;
+Johan2 uses a filtered `subscribe_entities` subscription to just these two helpers.
+This works with a normal device account (custom event-bus subscriptions were
+rejected by the deployed account). Initial/restored snapshots, duplicate button
+timestamps and old subscription/run IDs cannot replay a wake. The Assist owner
+task cancels the passive wake run with HA `unsubscribe_events` on its existing
+authenticated socket, then starts at `stt`
+with the same microphone, conversation and reply route. Wait for listening on
+HomeDash before speaking; `starting` does not indicate active capture.
+
+`script.johan2_assist_cancel` / `assist cancel` cancels a pending/listening command
+and rearms wake detection. The UI button toggles cancel while active; repeated
+non-UI start commands are ignored while busy. Already playing TTS is not stopped,
+and completed HA actions are not undone. Optional duration arguments from the
+legacy HomeDash capture path do not set Johan2's capture duration; HA VAD/timeout
+controls it. HomeDash local mic-level/echo diagnostics remain local, and disabling
+its remote mode restores the original HomeDash microphone Assist path.
+
+Validation: protocol host tests and both ESP-IDF builds passed. Both devices were
+flashed with verified hashes; start/listen/cancel passed through the direct and
+existing HomeDash remote routes, and helper state recovery took 14.9 seconds.
+The initial test cancelled immediately on listening and missed a user-reported
+short failed capture. The follow-up keeps remote listening visibly on screen,
+labels startup separately, and reports a failed capture for five seconds instead
+of silently closing. Full spoken capture/reply cycles were observed in device
+logs; the user confirmed that the revised flow works well.

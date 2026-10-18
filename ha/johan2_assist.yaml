@@ -1,0 +1,69 @@
+# Install as /config/packages/johan2_assist.yaml (packages must be enabled).
+# State is reported by Johan2. Commands are button presses, not UI state.
+input_button:
+  johan2_assist_start:
+    name: Johan2 start listening
+    icon: mdi:microphone
+  johan2_assist_cancel:
+    name: Johan2 cancel listening
+    icon: mdi:microphone-off
+input_select:
+  johan2_assist_state:
+    name: Johan2 Assist state
+    icon: mdi:microphone
+    options:
+      - offline
+      - idle
+      - starting
+      - listening
+      - processing
+      - speaking
+      - error
+    initial: offline
+
+script:
+  johan2_assist_start:
+    alias: Johan2 - start listening
+    description: Start a command using Johan2 microphone without a spoken wake word.
+    mode: single
+    sequence:
+      - service: input_button.press
+        target:
+          entity_id: input_button.johan2_assist_start
+  johan2_assist_cancel:
+    alias: Johan2 - cancel listening
+    description: Cancel a pending/listening command; does not stop already playing TTS.
+    mode: single
+    sequence:
+      - service: input_button.press
+        target:
+          entity_id: input_button.johan2_assist_cancel
+
+automation:
+  - id: johan2_assist_stale_state
+    alias: Johan2 - clear stale Assist state
+    description: Clear busy/listening state if the voice device stops reporting progress.
+    mode: restart
+    trigger:
+      - platform: state
+        entity_id: input_select.johan2_assist_state
+        to: starting
+        for: '00:00:15'
+      - platform: state
+        entity_id: input_select.johan2_assist_state
+        to: listening
+        for: '00:00:45'
+      - platform: state
+        entity_id: input_select.johan2_assist_state
+        to: processing
+        for: '00:02:00'
+      - platform: state
+        entity_id: input_select.johan2_assist_state
+        to: speaking
+        for: '00:02:00'
+    action:
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.johan2_assist_state
+        data:
+          option: offline

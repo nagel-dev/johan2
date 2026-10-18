@@ -5,7 +5,7 @@
 // HA Assist wire state, kept independent of ESP-IDF so it can be tested on a host.
 class AssistProtocol {
 public:
-    enum class Event { None, Authenticate, Ready, Wake, Transcript, SpeechReady, PlaybackAccepted, PlaybackFailed, Finished, Error, AuthInvalid };
+    enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, SyncError, Transcript, SpeechReady, PlaybackAccepted, PlaybackFailed, Finished, Error, AuthInvalid };
     bool authenticated = false;
     bool running = false;
     bool streaming = false;
@@ -18,16 +18,19 @@ public:
     void reset() {
         authenticated = running = streaming = command_active = false;
         handler = 0;
+        control_id_ = state_id_ = 0;
+        last_start_.clear();
+        last_cancel_.clear();
         announcement_pending = false;
         response_media_.clear();
         response_url_.clear();
         response_mime_.clear();
     }
-    std::string begin(const char* pipeline, bool speak = false, const char* conversation_id = nullptr) {
+    std::string begin(const char* pipeline, bool speak = false, const char* conversation_id = nullptr, bool skip_wake = false) {
         JsonDocument doc;
         doc["id"] = run_id = ++next_id_;
         doc["type"] = "assist_pipeline/run";
-        doc["start_stage"] = "wake_word";
+        doc["start_stage"] = skip_wake ? "stt" : "wake_word";
         doc["end_stage"] = speak ? "tts" : "intent";
         doc["timeout"] = 300;
         doc["input"]["sample_rate"] = 16000;
@@ -36,12 +39,46 @@ public:
         doc["input"]["auto_gain_dbfs"] = 31;
         if (pipeline && *pipeline) doc["pipeline"] = pipeline;
         if (conversation_id && *conversation_id) doc["conversation_id"] = conversation_id;
+        error_code_.clear();
         response_media_.clear();
         response_url_.clear();
         response_mime_.clear();
         speech_forwarded_ = false;
         running = true;
         streaming = command_active = false;
+        std::string result;
+        serializeJson(doc, result);
+        return result;
+    }
+    std::string cancel_run() {
+        JsonDocument doc;
+        doc["id"] = ++next_id_;
+        doc["type"] = "unsubscribe_events";
+        doc["subscription"] = run_id;
+        finish();
+        std::string result;
+        serializeJson(doc, result);
+        return result;
+    }
+    const std::string& error_code() const { return error_code_; }
+    std::string subscribe_control() {
+        JsonDocument doc;
+        doc["id"] = control_id_ = ++next_id_;
+        doc["type"] = "subscribe_entities";
+        doc["entity_ids"].to<JsonArray>().add("input_button.johan2_assist_start");
+        doc["entity_ids"].add("input_button.johan2_assist_cancel");
+        std::string result;
+        serializeJson(doc, result);
+        return result;
+    }
+    std::string state_update(const char* state) {
+        JsonDocument doc;
+        doc["id"] = state_id_ = ++next_id_;
+        doc["type"] = "call_service";
+        doc["domain"] = "input_select";
+        doc["service"] = "select_option";
+        doc["target"]["entity_id"] = "input_select.johan2_assist_state";
+        doc["service_data"]["option"] = state;
         std::string result;
         serializeJson(doc, result);
         return result;
@@ -60,8 +97,25 @@ public:
             announcement_pending = false;
             return doc["success"] == true ? Event::PlaybackAccepted : Event::PlaybackFailed;
         }
+        if (type == "result" && doc["success"] == false &&
+            ((control_id_ && (doc["id"] | -1) == control_id_) ||
+             (state_id_ && (doc["id"] | -1) == state_id_))) return Event::SyncError;
+        if (authenticated && control_id_ && type == "event" && (doc["id"] | -1) == control_id_) {
+            // Initial/restored snapshots seed timestamps but never replay button presses.
+            const auto added = doc["event"]["a"];
+            if (added["input_button.johan2_assist_start"]["s"].is<const char*>())
+                last_start_ = added["input_button.johan2_assist_start"]["s"].as<const char*>();
+            if (added["input_button.johan2_assist_cancel"]["s"].is<const char*>())
+                last_cancel_ = added["input_button.johan2_assist_cancel"]["s"].as<const char*>();
+            const auto changed = doc["event"]["c"];
+            const bool start = pressed(changed["input_button.johan2_assist_start"]["+"]["s"], last_start_);
+            const bool cancel = pressed(changed["input_button.johan2_assist_cancel"]["+"]["s"], last_cancel_);
+            if (cancel) return Event::RemoteCancel;
+            return start ? Event::RemoteStart : Event::None;
+        }
         if (!running || (doc["id"] | -1) != run_id) return Event::None;
         if (type == "result" && doc["success"] == false) {
+            error_code_ = doc["error"]["code"] | "unknown";
             finish();
             return Event::Error;
         }
@@ -80,10 +134,15 @@ public:
                 command_active = true;
                 return Event::Wake;
             }
+        } else if (event == "stt-start") {
+            command_active = true;
+            return Event::Listening;
+        } else if (event == "stt-vad-end") {
+            return Event::Processing;
         } else if (event == "stt-end") {
             streaming = false;
             transcript_ = doc["event"]["data"]["stt_output"]["text"] | "";
-            if (!transcript_.empty()) return Event::Transcript;
+            return transcript_.empty() ? Event::Processing : Event::Transcript;
         } else if (event == "tts-end" && !speech_forwarded_) {
             const auto output = doc["event"]["data"]["tts_output"];
             response_media_ = output["media_id"] | "";
@@ -96,6 +155,7 @@ public:
             finish();
             return Event::Finished;
         } else if (event == "error") {
+            error_code_ = doc["event"]["data"]["code"] | "unknown";
             finish();
             // Quiet rooms routinely time out; rearm promptly instead of backing off.
             if (doc["event"]["data"]["code"] == "wake-word-timeout") return Event::Finished;
@@ -150,10 +210,20 @@ private:
         return media;
     }
     int next_id_ = 0;
+    int control_id_ = 0, state_id_ = 0;
+    std::string last_start_, last_cancel_;
+    static bool pressed(JsonVariantConst state, std::string& previous) {
+        if (!state.is<const char*>()) return false;
+        const std::string value = state.as<const char*>();
+        if (value.empty() || value == "unknown" || value == "unavailable" || value == previous) return false;
+        previous = value;
+        return true;
+    }
     bool speech_forwarded_ = false;
     std::string response_media_;
     std::string response_url_;
     std::string transcript_;
+    std::string error_code_;
     std::string response_mime_;
     void finish() { running = streaming = command_active = false; }
 };

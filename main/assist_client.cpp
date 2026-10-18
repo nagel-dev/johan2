@@ -99,6 +99,20 @@ bool AssistClient::send_text(const std::string& text) {
            == static_cast<int>(text.size());
 }
 
+void AssistClient::publish_state(const char* state, bool force) {
+    const bool changed = strcmp(assist_state_, state) != 0;
+    assist_state_ = state;
+#ifdef CONFIG_JOHAN2_HOMEDASH_SYNC
+    if ((changed || force) && protocol_.authenticated) {
+        state_refresh_at_ = esp_timer_get_time() + 15000000;
+        if (!send_text(protocol_.state_update(state))) transport_failed_.store(true);
+    }
+#else
+    (void)changed;
+    (void)force;
+#endif
+}
+
 void AssistClient::reset_audio() {
     accepting_.store(false);
     command_active_.store(false);
@@ -137,9 +151,11 @@ void AssistClient::task(void* context) { static_cast<AssistClient*>(context)->ru
 void AssistClient::run() {
     ESP_ERROR_CHECK(esp_websocket_client_start(socket_));
     while (true) {
-        if (transport_failed_.exchange(false) ||
+        const bool failed = transport_failed_.exchange(false);
+        if (failed ||
             (protocol_.running && esp_timer_get_time() >= run_deadline_) ||
             (protocol_.announcement_pending && esp_timer_get_time() >= announcement_deadline_)) {
+            publish_state("error");
             reset_audio();
             // Must be called outside the WebSocket callback/task.
             esp_websocket_client_stop(socket_);
@@ -170,16 +186,51 @@ void AssistClient::run() {
                 } else if (result == AssistProtocol::Event::Ready) {
                     ESP_LOGI(TAG, "HA authenticated");
                     retry_at_ = 0;
+#ifdef CONFIG_JOHAN2_HOMEDASH_SYNC
+                    if (!send_text(protocol_.subscribe_control())) transport_failed_.store(true);
+#endif
+                    publish_state(remote_start_pending_ ? "starting" : "idle", true);
                 } else if (result == AssistProtocol::Event::AuthInvalid) {
                     ESP_LOGE(TAG, "HA token rejected; update local sdkconfig and rebuild");
                     reset_audio();
                     esp_websocket_client_stop(socket_);
                     vTaskDelete(nullptr);
                     return;
+                } else if (result == AssistProtocol::Event::SyncError) {
+                    ESP_LOGW(TAG, "HomeDash sync rejected; check HA helpers and device permissions");
+                } else if (result == AssistProtocol::Event::RemoteStart) {
+                    // HA cancels an Assist run through its normal subscription API.
+                    // Keep the authenticated socket, avoiding reconnect latency.
+                    if (!remote_start_pending_ && strcmp(assist_state_, "starting") != 0 &&
+                        !protocol_.command_active && !direct_playing_ && !protocol_.announcement_pending) {
+                        remote_start_pending_ = true;
+                        reset_audio();
+                        if (protocol_.running && !send_text(protocol_.cancel_run())) transport_failed_.store(true);
+                        retry_at_ = 0;
+                        publish_state("starting");
+                        ESP_LOGI(TAG, "Remote wake requested");
+                    }
+                } else if (result == AssistProtocol::Event::RemoteCancel) {
+                    if ((protocol_.command_active || remote_start_pending_ || strcmp(assist_state_, "starting") == 0) &&
+                        !direct_playing_ && !protocol_.announcement_pending) {
+                        remote_start_pending_ = false;
+                        reset_audio();
+                        if (protocol_.running && !send_text(protocol_.cancel_run())) transport_failed_.store(true);
+                        retry_at_ = 0;
+                        publish_state("idle");
+                    }
                 } else if (result == AssistProtocol::Event::Wake) {
                     wake_at_ = conversation_last_ = esp_timer_get_time();
                     ESP_LOGI(TAG, "Wake word detected; listening for command");
+                    publish_state("listening");
+                } else if (result == AssistProtocol::Event::Listening) {
+                    if (!wake_at_ || strcmp(assist_state_, "starting") == 0)
+                        wake_at_ = conversation_last_ = esp_timer_get_time();
+                    publish_state("listening");
+                } else if (result == AssistProtocol::Event::Processing) {
+                    publish_state("processing");
                 } else if (result == AssistProtocol::Event::Transcript) {
+                    publish_state("processing");
                     ESP_LOGI(TAG, "Heard: %s", protocol_.transcript().c_str());
                     if (CONFIG_JOHAN2_HOMEDASH_TRANSCRIPT_URL[0]) {
                         auto* text = new std::string(protocol_.transcript());
@@ -188,6 +239,7 @@ void AssistClient::run() {
                 } else if (result == AssistProtocol::Event::SpeechReady) {
                     // Unduck before Sendspin receives the answer audio. HA/MA manages
                     // announcement playback and restoration of the music queue.
+                    publish_state("speaking");
                     speech_at_ = esp_timer_get_time();
                     ESP_LOGI(TAG, "Reply audio ready %lld ms after wake word", (long long)((speech_at_ - wake_at_) / 1000));
                     reset_audio();
@@ -205,10 +257,13 @@ void AssistClient::run() {
                     ESP_LOGI(TAG, "Reply playback request %s %lld ms after audio ready", success ? "accepted" : "rejected",
                              (long long)((esp_timer_get_time() - speech_at_) / 1000));
                     retry_at_ = esp_timer_get_time() + (success ? 1500000 : 10000000);
+                    publish_state(success ? "idle" : "error");
                 } else if (result == AssistProtocol::Event::Error || result == AssistProtocol::Event::Finished) {
+                    if (!direct_playing_ && !protocol_.announcement_pending)
+                        publish_state(result == AssistProtocol::Event::Error ? "error" : "idle");
                     reset_audio();
                     retry_at_ = std::max(retry_at_, esp_timer_get_time() + (result == AssistProtocol::Event::Error ? 10000000 : 250000));
-                    if (result == AssistProtocol::Event::Error) ESP_LOGW(TAG, "Assist run failed; check HA pipeline diagnostics");
+                    if (result == AssistProtocol::Event::Error) ESP_LOGW(TAG, "Assist run failed: %s", protocol_.error_code().c_str());
                 }
                 if (!was_streaming && protocol_.streaming) {
                     xQueueReset(audio_queue_);
@@ -222,16 +277,23 @@ void AssistClient::run() {
             }
         }
         const int64_t now = esp_timer_get_time();
+#ifdef CONFIG_JOHAN2_HOMEDASH_SYNC
+        // HA helpers may finish loading after socket authentication or be reloaded.
+        // Reassert the device-owned state so a missed initial update self-heals.
+        if (protocol_.authenticated && now >= state_refresh_at_) publish_state(assist_state_, true);
+#endif
         if (direct_playing_) {
             const auto result = tts_.poll();
             if (result != TtsPlayer::None) {
                 direct_playing_ = false;
+                publish_state(result == TtsPlayer::Ok ? "idle" : "error");
                 ESP_LOGI(TAG, "Direct reply %s %lld ms after audio ready", result == TtsPlayer::Ok ? "played" : "failed",
                          (long long)((now - speech_at_) / 1000));
                 if (result == TtsPlayer::Unsupported && strlen(CONFIG_JOHAN2_HA_REPLY_PLAYER)) forward_to_player();
                 retry_at_ = std::max(retry_at_, now + 1000000);
             } else if (now >= announcement_deadline_) {
                 direct_playing_ = false;
+                publish_state("error");
             }
         }
         if (protocol_.authenticated && !protocol_.running && !protocol_.announcement_pending && !direct_playing_ && now >= retry_at_) {
@@ -244,7 +306,9 @@ void AssistClient::run() {
                          esp_random(), esp_random());
             }
             if (!send_text(protocol_.begin(CONFIG_JOHAN2_HA_PIPELINE, (kDirectReplies || strlen(CONFIG_JOHAN2_HA_REPLY_PLAYER) > 0),
-                                           conversation_id_))) transport_failed_.store(true);
+                                           conversation_id_, remote_start_pending_))) transport_failed_.store(true);
+            if (remote_start_pending_) wake_at_ = conversation_last_ = now;
+            remote_start_pending_ = false;
         }
         // Drain a small batch, then return to control events so stt-end stops promptly.
         Audio block;

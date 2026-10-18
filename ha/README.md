@@ -52,3 +52,23 @@ geïnstalleerd; de YAML is gecontroleerd, uitvoering en muziekherstel nog niet.
 Bronnen:
 - https://www.home-assistant.io/integrations/tts/
 - https://www.music-assistant.io/integration/announcements/
+
+## Johan2 en HomeDash Assist koppelen
+
+Installeer `johan2_assist.yaml` in `/config/packages/` en laad de HA-configuratie
+nadat de configuratiecontrole slaagt. Het pakket bevat twee `input_button`-helpers,
+`script.johan2_assist_start`, `script.johan2_assist_cancel`, de statushelper
+`input_select.johan2_assist_state` en een watchdog voor achtergebleven status.
+
+Schakel lokaal `JOHAN2_HOMEDASH_SYNC` en op HomeDash
+`HOMEDASH_JOHAN2_ASSIST` in en bouw/flash beide apparaten. De bestaande HomeDash
+Assistknop en `assist`-remotecommand gebruiken dan de microfoon van Johan2. Een
+echte wake word en de knop gebruiken dezelfde Assist-pipeline en conversatie.
+Start-/annuleerknoppen worden gericht als entiteiten gevolgd; het apparaataccount
+heeft hiervoor geen toegang tot willekeurige HA-events nodig. Oude beginstanden
+van de knoppen worden bij verbinden niet opnieuw uitgevoerd.
+
+Controleer op hardware: (1) Hey Jarvis zet HomeDash op luisteren; (2) na het einde
+van de spraak verdwijnt luisteren; (3) de remote start luisteren zonder wake word;
+(4) annuleren keert terug naar idle en de volgende gesproken wake werkt weer.
+Scripts/knoppen kunnen als doel van de bestaande remote-automatisering dienen.
