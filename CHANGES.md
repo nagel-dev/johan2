@@ -1,5 +1,10 @@
 # Changes
 
+## 2026-10-19 (reply fallback state)
+
+- **Fix** `main/assist_client.cpp` — when the direct reply fetch fails and the reply player takes over, Johan2 reports `speaking` instead of `error`, so HomeDash no longer shows "Failed - try again" while the reply is still coming. Flashed; not physically retested.
+- **Finding** the 30 s stall is HA not answering the TTS fetch (the Music Assistant fallback then waits on the same URL). Desktop fetches of the same OpenAI TTS pipeline answered in 1-2 s, so it is intermittent on the HA/OpenAI side.
+
 ## 2026-10-19
 
 - **Fix** `main/assist_client.cpp`, `main/tts_player.cpp` — ignore STT artifacts ("Context:" and the leaked STT prompt) by cancelling the run; drop 600 ms of microphone audio after the wake event so the wake-word tail does not start/end HA's VAD before the command; log voice ownership changes; heartbeat, pipeline and state sends no longer force a reconnect when delayed; direct reply fetch timeout raised from 8 s to 30 s so slow on-demand TTS is not sent to the slower player fallback. Built and flashed with verified hashes; listening verified by hand, other fixes awaiting physical testing.

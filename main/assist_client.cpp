@@ -410,7 +410,9 @@ void AssistClient::run() {
             const auto result = tts_.poll();
             if (result != TtsPlayer::None) {
                 direct_playing_ = false;
-                if (!remote_start_pending_) publish_state(result == TtsPlayer::Ok ? "idle" : "error");
+                // A fallback to the reply player is still coming, so this is not an error yet.
+                const bool falling_back = result == TtsPlayer::Unsupported && strlen(CONFIG_JOHAN2_HA_REPLY_PLAYER);
+                if (!remote_start_pending_) publish_state(result == TtsPlayer::Ok ? "idle" : falling_back ? "speaking" : "error");
                 ESP_LOGI(TAG, "Direct reply %s %lld ms after audio ready", result == TtsPlayer::Ok ? "played" : "failed",
                          (long long)((now - speech_at_) / 1000));
                 if (result == TtsPlayer::Unsupported && strlen(CONFIG_JOHAN2_HA_REPLY_PLAYER)) forward_to_player();
