@@ -1,0 +1,3 @@
+#pragma once
+#define CONFIG_JOHAN2_MIC_AEC 1
+#define CONFIG_JOHAN2_MIC_AEC_DELAY_MS 0

@@ -173,8 +173,8 @@ Music retains the coloured LED effect, with white microphone activity as before.
 After wake-word detection or remote command activation, music is digitally muted
 while the command is active, including capture and processing. It is restored
 before the spoken reply, cancellation or completion without changing the player
-volume setting. During direct spoken replies, music remains at one fifth volume. There is no acoustic echo cancellation: loud speaker audio can
-still impair wake-word detection. When `JOHAN2_HA_REPLY_PLAYER` is set, the pipeline
+volume setting. During direct spoken replies, music remains at one fifth volume. Acoustic echo cancellation is optional and disabled by default; without it, loud
+speaker audio can still impair wake-word detection. See the AEC test below. When `JOHAN2_HA_REPLY_PLAYER` is set, the pipeline
 continues through text-to-speech. Its generated audio is forwarded to that HA
 media player using `media_player.play_media` with `announce: true`; Music Assistant
 handles playback and restoration of the music queue through Sendspin. Firmware
@@ -241,6 +241,105 @@ Build success does not verify microphone wiring, signal quality, or playback.
 The initial hardware smoke test downloaded a valid 15-second WAV with no reported
 read errors and 0.195% rail-clipped samples at gain 16; acoustic conditions were
 uncontrolled, so a deliberate silence/near/far speech test is still required.
+
+### Playback-reference AEC and music-on testing
+
+Enable `JOHAN2_MIC_AEC` and `JOHAN2_MIC_DIAGNOSTICS` in menuconfig, then build
+and flash via `./scripts/idf.sh`. AEC is experimental and off by default. The local
+ignored sdkconfig enables it with fixed mic gain 4 and automatic gain disabled.
+The flashed device passed boot and endpoint captures. Speaker-bleed attenuation
+has been measured as described below; music-on wake-word accuracy remains unverified. No new microphone wiring is needed. ESP-SR is managed and pinned to
+2.4.2; AEC uses its speech-recognition mode without loading a wake-word model.
+
+The reference comes from the PCM actually sent by I2S, after volume, mute, music
+and direct-TTS mixing. Interrupt callbacks copy fixed-size DMA blocks into bounded
+queues; resampling and AEC run only in the capture task. A 63-tap low-pass converts
+the stereo average from 48 kHz to 16 kHz. DMA timestamps align playback and capture,
+with integer time lookup rather than assuming both I2S controllers stay in phase.
+AEC frame/history storage and the TTS audio buffer live in PSRAM; queue/ISR and
+DMA storage remain internal. Playback DMA resources are reserved before AEC starts.
+AEC runs before high-pass, optional profile denoising, and gain/clipping. It uses
+512-sample (32 ms) frames and 16 ms reference lookahead; frame assembly and lookahead
+add latency. Missing/stale references bypass cancellation for that frame. Queue
+losses discard incomplete microphone frames and are counted in diagnostics.
+
+Start music at the troublesome volume and let it play for a few seconds. Capture:
+
+```sh
+python3 scripts/capture_aec.py DEVICE_IP /tmp/johan2-aec-music
+```
+
+This makes one 15-second request and saves the comparison WAV, four separate mono
+WAVs, and `metrics.txt`. Leave the first three seconds to music alone, then speak
+nearby and from your normal position. Avoid the wake word during recording so
+Assist does not mute music or play a reply halfway through. Repeat with music off
+using a new output directory. Then test real wake-word attempts separately at the
+same volume and position; a WAV comparison alone cannot establish detection rates.
+
+The direct endpoint is also available:
+
+```sh
+curl --fail --max-time 30 -D aec-headers.txt -o mic-aec.wav http://DEVICE_IP:8081/mic-aec.wav
+```
+
+`/mic-aec.wav` now defaults to mono final Assist input, rather than mixing a
+playback reference and unprocessed audio into a normal listening test. Use
+`?channel=before`, `?channel=reference`, `?channel=clean`, or `?channel=assist` for
+one mono track. `?channel=all` returns the simultaneous 16 kHz, four-channel,
+signed 16-bit analysis WAV (15 seconds, 1,920,000 audio bytes). The capture utility
+requests `channel=all`, splits it into mono WAVs, and on macOS also exports individual
+44.1 kHz AAC/M4A tracks for the Music app (a temporary resampled copy feeds
+the macOS AAC encoder; the analysis WAV remains at 16 kHz). Do not audition the analysis WAV as a combined
+mix to judge cancellation: it intentionally includes the original mic and music.
+Channels in the analysis WAV are:
+
+| Channel | Contents | Purpose |
+| --- | --- | --- |
+| 1 | Microphone before AEC, before gain | Original speaker bleed and voice |
+| 2 | Time-aligned, downsampled playback reference | Check the music reference exists |
+| 3 | AEC output, before gain and filtering | Compare with channel 1 at equal playback volume |
+| 4 | Final Assist input | Hear the signal actually sent to HA |
+
+Channel 4 can be louder because of gain and can have additional profile-denoiser
+latency. Compare channels 1 and 3 for echo suppression and preservation of your
+voice. The reference is a stereo average; strongly different/opposite-phase stereo
+channels, external speaker delay, amplifier distortion and microphone overload
+can limit cancellation. `JOHAN2_MIC_AEC_DELAY_MS` adds 0–150 ms reference delay. The diagnostic query
+`delay_ms=N` changes it until another change or reboot; the capture task recreates
+the learned filter once on change, and the endpoint waits two seconds before
+recording. For example, `scripts/capture_aec.py DEVICE_IP /tmp/aec-25 --delay-ms 25`
+compares a delayed speaker path without repeatedly flashing. Use measurements,
+not speaker proximity alone, to choose a delay; Bluetooth/DSP speaker AUX paths
+may still have processing latency. Metrics report the active delay.
+
+`X-Mic-Metrics` adds `aec` (initialization succeeded), `aec_frames` (frames actually
+processed by AEC), `aec_missing_samples`, `aec_reference_gaps`, `aec_reference_drops`, and
+`aec_mic_drops`. Counters report changes during this capture. During continuous
+music, expect many processed frames and zero drops; an initialized AEC with zero
+processed frames means it was bypassed. Missing-reference counts can rise around
+playback start/stop. Processing time includes reference resampling and AEC across
+the complete frame; block intervals are normally about 32 ms with AEC enabled.
+The Bose Mini installation measured about 30 ms of speaker-path delay. Its current
+ignored local configuration starts at 25 ms, leaving a small causal margin for the
+AEC filter. Separate music-only captures measured approximately 6.6 dB input/output
+attenuation at 0 ms and 11–12 dB at 25–30 ms, with zero queue drops. These were
+different music segments, not an identical-signal laboratory comparison, and do
+not establish wake-word detection rates. DSP runs on core 1 with the hot capture/AEC
+sources optimized; a prior music-on capture exposed CPU-0 idle starvation.
+
+The endpoint returns 503 if AEC is disabled or failed initialization. Existing
+`/mic.wav` and `/mic-compare.wav` remain available. The same temporary diagnostics
+access and in-memory recording behavior described above applies.
+
+Host checks (the AEC adapter test uses a DSP stub, not the vendor algorithm):
+
+```sh
+c++ -O2 -std=c++17 -Wall -Wextra -Werror -I main tests/playback_reference_test.cpp -o /tmp/johan2-playback-reference-test
+/tmp/johan2-playback-reference-test
+c++ -O2 -std=c++17 -Wall -Wextra -Werror -I main -I tests/aec_stubs tests/mic_aec_test.cpp main/mic_aec.cpp -o /tmp/johan2-mic-aec-test
+/tmp/johan2-mic-aec-test
+python3 tests/capture_aec_test.py
+```
 
 ### Simultaneous raw/processed microphone comparison
 
@@ -361,11 +460,13 @@ listening improvement is unproven. Build with `./scripts/idf.sh build` after
 applying local settings, then flash the intended device. Listening feedback does
 not establish clipping-free operation at every music level or Assist recognition.
 
-### Dynamic microphone gain (current local trial)
+### Optional dynamic microphone gain
 
 `JOHAN2_MIC_AUTO_GAIN` adds a small capture-task gain controller after noise
-suppression and before PCM quantization. It is off by default; the current local
-trial enables it with baseline gain 4 and maximum gain 16:
+suppression and before PCM quantization. It is off by default. The earlier local
+trial used baseline gain 4 and maximum gain 16; AEC testing now disables automatic
+gain and uses fixed gain 4 so output-level changes do not confound comparison.
+To enable the optional controller again:
 
 ```ini
 CONFIG_JOHAN2_MIC_AUTO_GAIN=y

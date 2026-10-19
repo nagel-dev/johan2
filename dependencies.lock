@@ -26,6 +26,58 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 0.4.1
+  espressif/cjson:
+    component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.7.19~2
+  espressif/dl_fft:
+    component_hash: 965be7152132b365061abf5fc5fc7b85e525f73b94a204cdda61cfe9572c0d77
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 0.8.0
+  espressif/esp-dsp:
+    component_hash: 12e44db246517a627bc0fe2b255b8335410c0215c98bfba2df5a8e3edea839ef
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.2'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.8.0
+  espressif/esp-sr:
+    component_hash: 91f54718b22328546502ed96c6b2e53033cb90d83a3fd87bc60d0b27a7cc841a
+    dependencies:
+    - name: espressif/cjson
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.7.19
+    - name: espressif/dl_fft
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=0.2.0'
+    - name: espressif/esp-dsp
+      registry_url: https://components.espressif.com
+      require: private
+      version: 1.8.0
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.4.2
   espressif/esp_audio_codec:
     component_hash: a5b9275af74247e3ce536d16a7080e4d77207a185b63e1bea368eb4d57176c2b
     dependencies:
@@ -84,11 +136,12 @@ dependencies:
     version: 9331ace6428979982c934384702d289958ca125e
 direct_dependencies:
 - bblanchon/arduinojson
+- espressif/esp-sr
 - espressif/esp_audio_codec
 - espressif/esp_websocket_client
 - espressif/mdns
 - idf
 - sendspin-cpp
-manifest_hash: 43da85ae7182cf4c10dfd0c53254e834672816cba18b0eb12d2915e827269ee3
+manifest_hash: e5e0f42c7f7a702f85920cce19c1e801e8a643fbb8574b3fcb1c8ec548f0caea
 target: esp32s3
 version: 3.0.0

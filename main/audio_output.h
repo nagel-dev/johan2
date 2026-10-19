@@ -1,7 +1,9 @@
 #pragma once
 #include <atomic>
+#include "sdkconfig.h"
 #include "driver/i2s_std.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/stream_buffer.h"
 #include "sendspin/player_role.h"
@@ -28,6 +30,7 @@ private:
     void tx_enable_locked();
     SemaphoreHandle_t tx_lock_{nullptr};
     StreamBufferHandle_t tts_buf_{nullptr};
+    StaticStreamBuffer_t tts_control_{}; // Control stays in internal RAM; audio storage uses PSRAM.
     std::atomic<bool> tts_running_{false};
     bool tx_enabled_{false};
     int16_t tts_scratch_[1024]{}; // TTS task only
@@ -49,6 +52,16 @@ private:
     std::atomic<uint8_t> music_peak_{0};
     uint8_t music_level_{0};
     uint16_t led_hue_{0};
+#if CONFIG_JOHAN2_MIC_AEC
+    struct ReferenceBlock { int64_t end_us; int16_t stereo[DMA_FRAMES * CHANNELS]; };
+    struct MicrophoneBlock { int64_t end_us; uint32_t sequence; int32_t raw[256]; };
+    QueueHandle_t reference_queue_{nullptr}, microphone_queue_{nullptr};
+    // ISR scratch is in static AudioOutput storage, not on the interrupt stack.
+    ReferenceBlock reference_isr_{};
+    MicrophoneBlock microphone_isr_{};
+    std::atomic<uint32_t> reference_drops_{0}, microphone_drops_{0};
+    static bool received(i2s_chan_handle_t, i2s_event_data_t*, void*);
+#endif
     static void microphone_task(void* context);
     i2s_chan_handle_t mic_rx_{nullptr};
     int64_t led_next_us_{0};

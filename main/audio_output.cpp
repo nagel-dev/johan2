@@ -3,12 +3,15 @@
 #include "assist_client.h"
 #include "mic_diagnostics.h"
 #include "mic_pcm.h"
+#include "mic_aec.h"
 #include "mic_gain_control.h"
 #if CONFIG_JOHAN2_MIC_PROFILE_DENOISE
 #include "mic_denoise.h"
 #endif
 #include <algorithm>
 #include <cmath>
+#include <new>
+#include "esp_heap_caps.h"
 #include "freertos/task.h"
 #include <cstring>
 #include "esp_log.h"
@@ -44,6 +47,13 @@ void AudioOutput::init(sendspin::PlayerRole& player, AssistClient* assist) {
 #endif
     // Separate I2S controller: microphone clocks continue while playback is idle.
     i2s_chan_config_t mic_channel = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
+#if CONFIG_JOHAN2_MIC_AEC
+    static_assert(DMA_FRAMES == PlaybackReference::kFrames, "AEC reference must match TX DMA frames");
+    mic_channel.dma_frame_num = 256;
+    reference_queue_ = xQueueCreate(24, sizeof(ReferenceBlock));
+    microphone_queue_ = xQueueCreate(6, sizeof(MicrophoneBlock));
+    ESP_ERROR_CHECK(reference_queue_ && microphone_queue_ ? ESP_OK : ESP_ERR_NO_MEM);
+#endif
     ESP_ERROR_CHECK(i2s_new_channel(&mic_channel, nullptr, &mic_rx_));
     i2s_std_config_t mic{};
     mic.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(16000);
@@ -55,12 +65,19 @@ void AudioOutput::init(sendspin::PlayerRole& player, AssistClient* assist) {
     mic.gpio_cfg.dout = I2S_GPIO_UNUSED;
     mic.gpio_cfg.din = GPIO_NUM_17;
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(mic_rx_, &mic));
-    ESP_ERROR_CHECK(i2s_channel_enable(mic_rx_));
-    ESP_ERROR_CHECK(xTaskCreate(microphone_task, "mic_level", 4096, this, 4, nullptr) == pdPASS
-                    ? ESP_OK : ESP_ERR_NO_MEM);
+#if CONFIG_JOHAN2_MIC_AEC
+    i2s_event_callbacks_t mic_callbacks{};
+    mic_callbacks.on_recv = received;
+    ESP_ERROR_CHECK(i2s_channel_register_event_callback(mic_rx_, &mic_callbacks, this));
+#endif
     volume_.store(CONFIG_JOHAN2_INITIAL_VOLUME);
     tx_lock_ = xSemaphoreCreateMutex();
-    tts_buf_ = xStreamBufferCreate(TTS_BUFFER_BYTES, 1);
+    // TTS is copied through task-local I2S scratch buffers, never used directly
+    // by DMA/ISR. Keep its 32 KB payload out of scarce internal/DMA RAM.
+    auto* tts_storage = static_cast<uint8_t*>(heap_caps_malloc(TTS_BUFFER_BYTES + 1,
+                                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (tts_storage)
+        tts_buf_ = xStreamBufferCreateStatic(TTS_BUFFER_BYTES + 1, 1, tts_storage, &tts_control_);
     ESP_ERROR_CHECK(tx_lock_ && tts_buf_ ? ESP_OK : ESP_ERR_NO_MEM);
     i2s_chan_config_t channel = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     channel.dma_desc_num = DMA_DESCRIPTORS;
@@ -79,17 +96,64 @@ void AudioOutput::init(sendspin::PlayerRole& player, AssistClient* assist) {
     i2s_event_callbacks_t callbacks{};
     callbacks.on_sent = sent;
     ESP_ERROR_CHECK(i2s_channel_register_event_callback(tx_, &callbacks, this));
+    // Reserve DMA/control resources before AEC performs its startup allocations.
+    ESP_ERROR_CHECK(i2s_channel_enable(mic_rx_));
+#if CONFIG_JOHAN2_MIC_AEC
+    constexpr uint32_t microphone_stack = 8192;
+#else
+    constexpr uint32_t microphone_stack = 4096;
+#endif
+#if CONFIG_JOHAN2_MIC_AEC && !CONFIG_FREERTOS_UNICORE
+    // Keep continuous DSP off the Wi-Fi/network core. FPU tasks otherwise pin
+    // themselves to whichever core first executes their floating-point code.
+    ESP_ERROR_CHECK(xTaskCreatePinnedToCore(microphone_task, "mic_level", microphone_stack, this, 4, nullptr, 1) == pdPASS
+                    ? ESP_OK : ESP_ERR_NO_MEM);
+#else
+    ESP_ERROR_CHECK(xTaskCreate(microphone_task, "mic_level", microphone_stack, this, 4, nullptr) == pdPASS
+                    ? ESP_OK : ESP_ERR_NO_MEM);
+#endif
 }
 
 bool AudioOutput::sent(i2s_chan_handle_t, i2s_event_data_t* event, void* context) {
     auto& self = *static_cast<AudioOutput*>(context);
-    // ISR only records progress. Sendspin uses locks and must run in task context.
+    // ISR records progress and an optional bounded reference copy. Sendspin stays in task context.
     portENTER_CRITICAL_ISR(&self.progress_lock_);
     self.frames_ += event->size / 4; // stereo x 16-bit
     self.timestamp_ = esp_timer_get_time();
     portEXIT_CRITICAL_ISR(&self.progress_lock_);
+#if CONFIG_JOHAN2_MIC_AEC
+    BaseType_t woken = pdFALSE;
+    if (event->dma_buf && event->size == sizeof(self.reference_isr_.stereo)) {
+        self.reference_isr_.end_us = self.timestamp_;
+        memcpy(self.reference_isr_.stereo, event->dma_buf, sizeof(self.reference_isr_.stereo));
+        if (xQueueSendFromISR(self.reference_queue_, &self.reference_isr_, &woken) != pdTRUE)
+            self.reference_drops_.fetch_add(1);
+    } else {
+        self.reference_drops_.fetch_add(1);
+    }
+    return woken == pdTRUE;
+#else
     return false;
+#endif
 }
+
+#if CONFIG_JOHAN2_MIC_AEC
+bool AudioOutput::received(i2s_chan_handle_t, i2s_event_data_t* event, void* context) {
+    auto& self = *static_cast<AudioOutput*>(context);
+    // One bounded DMA copy. No DSP, allocation, logging, or network calls in ISR.
+    ++self.microphone_isr_.sequence;
+    self.microphone_isr_.end_us = esp_timer_get_time();
+    if (!event->dma_buf || event->size != sizeof(self.microphone_isr_.raw)) {
+        self.microphone_drops_.fetch_add(1);
+        return false;
+    }
+    memcpy(self.microphone_isr_.raw, event->dma_buf, sizeof(self.microphone_isr_.raw));
+    BaseType_t woken = pdFALSE;
+    if (xQueueSendFromISR(self.microphone_queue_, &self.microphone_isr_, &woken) != pdTRUE)
+        self.microphone_drops_.fetch_add(1);
+    return woken == pdTRUE;
+}
+#endif
 
 void AudioOutput::set_led(uint8_t r, uint8_t g, uint8_t b) {
     // WS2812 retains its color: avoid periodic switching for unchanged values,
@@ -267,8 +331,24 @@ size_t AudioOutput::on_audio_write(uint8_t* data, size_t length, uint32_t timeou
 
 void AudioOutput::microphone_task(void* context) {
     auto& self = *static_cast<AudioOutput*>(context);
-    int32_t samples[256];
-    int16_t pcm[256];
+#if CONFIG_JOHAN2_MIC_AEC
+    // Fixed AEC frame/history storage is capture-task-only and can live in PSRAM.
+    // Allocate once, with the alignment required by Espressif's DSP input buffers.
+    void* aec_storage = heap_caps_aligned_alloc(16, sizeof(MicAec), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    ESP_ERROR_CHECK(aec_storage ? ESP_OK : ESP_ERR_NO_MEM);
+    auto& aec = *new (aec_storage) MicAec;
+    aec.init();
+    static MicrophoneBlock microphone, pending_microphone;
+    bool have_pending_microphone = false;
+    uint32_t aec_processing_us = 0;
+    static ReferenceBlock reference;
+    uint32_t previous_sequence = 0;
+    static constexpr size_t capture_size = MicAec::kFrame;
+#else
+    static constexpr size_t capture_size = 256;
+#endif
+    static int32_t samples[capture_size];
+    static int16_t pcm[capture_size];
     MicPcm converter(CONFIG_JOHAN2_MIC_HIGHPASS_HZ);
 #ifdef CONFIG_JOHAN2_MIC_AUTO_GAIN
     constexpr bool auto_gain = true;
@@ -276,7 +356,7 @@ void AudioOutput::microphone_task(void* context) {
     constexpr bool auto_gain = false;
 #endif
     MicGainControl gain_control(auto_gain, CONFIG_JOHAN2_MIC_GAIN, CONFIG_JOHAN2_MIC_MAX_GAIN);
-    static float filtered_pcm[256]; // Capture-task scratch; keep the 4 KB stack bounded.
+    static float filtered_pcm[capture_size]; // Capture-task scratch; keep the 4 KB stack bounded.
 #if CONFIG_JOHAN2_MIC_PROFILE_DENOISE
     // Fixed storage in BSS: the FFT buffers must not consume the 4 KB task stack.
     static MicDenoise denoiser(true, CONFIG_JOHAN2_MIC_HIGHPASS_HZ);
@@ -287,7 +367,38 @@ void AudioOutput::microphone_task(void* context) {
     unsigned calibration_blocks = 0;
     while (true) {
         size_t bytes = 0;
+        int64_t processing_started_wait = 0;
+#if CONFIG_JOHAN2_MIC_AEC
+        // Copy DMA data in the callback so sample timestamps survive task latency.
+        // The driver's own RX pointer queue is unused in this mode.
+        const esp_err_t err = xQueueReceive(self.microphone_queue_, &microphone, pdMS_TO_TICKS(100)) == pdTRUE
+                                 ? ESP_OK : ESP_ERR_TIMEOUT;
+        aec.set_delay_ms(mic_diagnostics::aec_delay_ms());
+        processing_started_wait = esp_timer_get_time();
+        for (unsigned n = 0; n < 24 && xQueueReceive(self.reference_queue_, &reference, 0) == pdTRUE; ++n)
+            aec.push_reference(reference.stereo, reference.end_us);
+        if (err == ESP_OK) {
+            // One DMA block of lookahead lets confirmed TX samples arrive before
+            // their matching microphone block is processed (independent IRQ phases).
+            bool ready = false;
+            if (have_pending_microphone) {
+                const bool gap = previous_sequence && pending_microphone.sequence != previous_sequence + 1;
+                previous_sequence = pending_microphone.sequence;
+                ready = aec.append(pending_microphone.raw, 256, pending_microphone.end_us, gap);
+            }
+            pending_microphone = microphone;
+            have_pending_microphone = true;
+            if (!ready) {
+                aec_processing_us += esp_timer_get_time() - processing_started_wait;
+                continue;
+            }
+            memcpy(samples, aec.raw(), sizeof(samples));
+            bytes = sizeof(samples);
+        }
+#else
+        (void)processing_started_wait;
         const esp_err_t err = i2s_channel_read(self.mic_rx_, samples, sizeof(samples), &bytes, 100);
+#endif
         if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
             mic_diagnostics::feed(nullptr, nullptr, 0, true);
             self.peak_.store(0);
@@ -299,18 +410,39 @@ void AudioOutput::microphone_task(void* context) {
             mic_diagnostics::feed(nullptr, nullptr, 0, err != ESP_OK);
             continue;
         }
-        const int64_t processing_started = esp_timer_get_time();
+        const int64_t processing_started =
+#if CONFIG_JOHAN2_MIC_AEC
+            processing_started_wait; // Includes reference resampling/AEC; excludes the queue wait.
+#else
+            esp_timer_get_time();
+#endif
         for (size_t i = 0; i < count; ++i) {
+#if CONFIG_JOHAN2_MIC_AEC
+            float filtered = converter.filter(int32_t(aec.clean()[i]) * 65536);
+#else
             float filtered = converter.filter(samples[i]);
+#endif
 #if CONFIG_JOHAN2_MIC_PROFILE_DENOISE
             filtered = denoiser.process(filtered);
 #endif
             filtered_pcm[i] = filtered;
         }
         gain_control.process(filtered_pcm, pcm, count);
-        const uint32_t processing_us = esp_timer_get_time() - processing_started;
+        uint32_t processing_us = esp_timer_get_time() - processing_started;
+#if CONFIG_JOHAN2_MIC_AEC
+        processing_us += aec_processing_us;
+        aec_processing_us = 0;
+        mic_diagnostics::aec_status(aec.ready(), aec.frames(), aec.missing(), aec.gaps(),
+                                    self.reference_drops_.load(), self.microphone_drops_.load());
+        mic_diagnostics::feed(samples, pcm, count, err != ESP_OK, processing_us, gain_control.gain(),
+                              aec.reference(), aec.clean());
+#else
         mic_diagnostics::feed(samples, pcm, count, err != ESP_OK, processing_us, gain_control.gain());
-        if (self.assist_) self.assist_->submit(pcm, count);
+#endif
+        if (self.assist_) {
+            for (size_t offset = 0; offset < count; offset += AssistClient::SAMPLES)
+                self.assist_->submit(pcm + offset, std::min(AssistClient::SAMPLES, count - offset));
+        }
         // INMP441 supplies signed 24-bit samples in the high bits of each 32-bit slot.
         // Remove DC before measuring RMS, so a static offset cannot light the LED.
         double sum = 0, squares = 0;

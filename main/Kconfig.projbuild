@@ -113,6 +113,22 @@ menu "Johan2 Player Configuration"
             Experimental spectral suppression derived from noisy/quiet recordings.
             Adds 32 ms fixed latency and uses about 20 KB fixed RAM.
             Operates before gain/clipping; disable for unprocessed comparison.
+    config JOHAN2_MIC_AEC
+        bool "Experimental playback-reference acoustic echo cancellation"
+        default n
+        help
+            Uses ESP-SR AEC before microphone filtering/gain, with a timestamped
+            mono reference from actual DAC DMA output (music and direct TTS).
+            Uses 32 ms frames and 16 ms reference lookahead. Needs physical
+            validation with music.
+    config JOHAN2_MIC_AEC_DELAY_MS
+        int "Additional acoustic reference delay (ms)"
+        depends on JOHAN2_MIC_AEC
+        range 0 150
+        default 0
+        help
+            Delays the playback reference relative to the microphone. Start at
+            zero for a directly connected DAC/amp; increase for delayed speakers.
     config JOHAN2_MIC_DIAGNOSTICS
         bool "Enable on-demand microphone WAV recording on HTTP port 8081"
         default n
