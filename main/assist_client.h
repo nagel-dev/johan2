@@ -51,6 +51,9 @@ private:
     bool remote_start_pending_{false};
     const char* assist_state_{"offline"};
     int64_t state_refresh_at_{0};
+    int64_t heartbeat_at_{0};
+    int64_t wake_tail_until_{0};
+    static constexpr int64_t kWakeTailUs = 600000;
     int64_t stop_retry_at_{0};
     // One wake-word-free retry after an unclear command; gives up after kFollowupUs without speech.
     static constexpr int64_t kFollowupUs = 3000000;

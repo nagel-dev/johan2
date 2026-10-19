@@ -139,7 +139,7 @@ TtsPlayer::Result TtsPlayer::play() {
     if (!decoded_) return Failed;
     esp_http_client_config_t config{};
     config.url = url_.c_str();
-    config.timeout_ms = 8000;
+    config.timeout_ms = 30000; // HA synthesizes on demand; slow TTS must not fall back to the player
     config.buffer_size = 2048;
     auto client = esp_http_client_init(&config);
     if (!client) return Failed;

@@ -111,7 +111,7 @@ void AssistClient::publish_state(const char* state, bool force) {
 #ifdef CONFIG_JOHAN2_HOMEDASH_SYNC
     if ((changed || force) && protocol_.authenticated) {
         state_refresh_at_ = esp_timer_get_time() + 15000000;
-        if (!send_text(protocol_.state_update(state))) transport_failed_.store(true);
+        if (!send_text(protocol_.state_update(state))) ESP_LOGW(TAG, "State update delayed");
     }
 #else
     (void)changed;
@@ -126,6 +126,14 @@ static bool is_stop_phrase(const std::string& text) {
     static const char* const phrases[] = {"stop", "stopp", "cancel", "annuleer", "annuleren", "laatmaar", "stil"};
     for (const char* phrase : phrases) if (word == phrase) return true;
     return false;
+}
+
+// STT hallucination on noise/silence: a bare "Context:" label or the leaked STT prompt is not a command.
+static bool is_stt_artifact(const std::string& text) {
+    std::string word;
+    for (unsigned char c : text) if (isalnum(c)) word += static_cast<char>(tolower(c));
+    return word == "context" || word == "contexts" ||
+           word.find("smarthomeusertalkingtohomeassistant") != std::string::npos;
 }
 
 void AssistClient::cancel_command(bool stop_playback) {
@@ -228,6 +236,7 @@ void AssistClient::run() {
                     retry_at_ = 0;
 #ifdef CONFIG_JOHAN2_HOMEDASH_SYNC
                     if (!send_text(protocol_.subscribe_control())) transport_failed_.store(true);
+                    if (!send_text(protocol_.pipeline_update(CONFIG_JOHAN2_HA_PIPELINE))) ESP_LOGW(TAG, "Pipeline report delayed");
 #endif
                     publish_state(remote_start_pending_ ? "starting" : "idle", true);
                 } else if (result == AssistProtocol::Event::AuthInvalid) {
@@ -238,7 +247,13 @@ void AssistClient::run() {
                     return;
                 } else if (result == AssistProtocol::Event::SyncError) {
                     ESP_LOGW(TAG, "HomeDash sync rejected; check HA helpers and device permissions");
+                } else if (result == AssistProtocol::Event::OwnerChanged) {
+                    ESP_LOGI(TAG, "Voice ownership %s", protocol_.owns_voice ? "granted" : "revoked");
+                    if (!protocol_.owns_voice) cancel_command(true);
                 } else if (result == AssistProtocol::Event::RemoteStart) {
+#ifdef CONFIG_JOHAN2_HOMEDASH_SYNC
+                    if (!protocol_.owns_voice) continue;
+#endif
                     // HA cancels an Assist run through its normal subscription API.
                     // Keep the authenticated socket, avoiding reconnect latency.
                     // Pressing start while processing/speaking interrupts that work (barge-in).
@@ -269,6 +284,7 @@ void AssistClient::run() {
                     wake_at_ = conversation_last_ = esp_timer_get_time();
                     followup_used_ = false;
                     followup_count_ = 0;
+                    wake_tail_until_ = wake_at_ + kWakeTailUs;
                     ESP_LOGI(TAG, "Wake word detected; listening for command");
                     publish_state("listening");
                 } else if (result == AssistProtocol::Event::Listening) {
@@ -288,6 +304,11 @@ void AssistClient::run() {
                         ESP_LOGI(TAG, "Cancelled by voice");
                         cancel_command(false);
                         command_active_.store(false);
+                        continue;
+                    }
+                    if (is_stt_artifact(protocol_.transcript())) {
+                        ESP_LOGW(TAG, "Ignored STT artifact");
+                        cancel_command(false);
                         continue;
                     }
                     if (CONFIG_JOHAN2_HOMEDASH_TRANSCRIPT_URL[0]) {
@@ -366,7 +387,14 @@ void AssistClient::run() {
 #ifdef CONFIG_JOHAN2_HOMEDASH_SYNC
         // HA helpers may finish loading after socket authentication or be reloaded.
         // Reassert the device-owned state so a missed initial update self-heals.
-        if (protocol_.authenticated && now >= state_refresh_at_) publish_state(assist_state_, true);
+        if (protocol_.authenticated && now >= state_refresh_at_) {
+            publish_state(assist_state_, true);
+            if (!send_text(protocol_.pipeline_update(CONFIG_JOHAN2_HA_PIPELINE))) ESP_LOGW(TAG, "Pipeline report delayed");
+        }
+        if (protocol_.authenticated && now >= heartbeat_at_) {
+            heartbeat_at_ = now + 5000000;
+            if (!send_text(protocol_.heartbeat())) ESP_LOGW(TAG, "Heartbeat delayed");
+        }
 #endif
         if (followup_deadline_ && protocol_.speech_started && !followup_speech_seen_) {
             followup_speech_seen_ = true;
@@ -402,7 +430,13 @@ void AssistClient::run() {
             if (!send_text(protocol_.cancel_stop())) transport_failed_.store(true);
             if (!protocol_.streaming) { accepting_.store(false); xQueueReset(audio_queue_); }
         }
-        if (protocol_.authenticated && !protocol_.running && !protocol_.announcement_pending && !direct_playing_ && now >= retry_at_) {
+        const bool voice_allowed =
+#ifdef CONFIG_JOHAN2_HOMEDASH_SYNC
+            protocol_.owns_voice;
+#else
+            true;
+#endif
+        if (voice_allowed && protocol_.authenticated && !protocol_.running && !protocol_.announcement_pending && !direct_playing_ && now >= retry_at_) {
             reset_audio();
             // A pipeline that never starts must not leave the UI on "starting" for five minutes.
             run_deadline_ = now + 10000000;
@@ -421,6 +455,8 @@ void AssistClient::run() {
         // Drain a small batch, then return to control events so stt-end stops promptly.
         Audio block;
         for (int n = 0; n < 4 && accepting_.load() && xQueueReceive(audio_queue_, &block, 0) == pdTRUE; ++n) {
+            // Keep the wake word's own tail out of STT, where VAD would take it for the command.
+            if (esp_timer_get_time() < wake_tail_until_) continue;
             uint8_t packet[1 + SAMPLES * 2];
             packet[0] = protocol_.active_handler();
             for (size_t i = 0; i < block.count; ++i) {

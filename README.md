@@ -513,3 +513,26 @@ short failed capture. The follow-up keeps remote listening visibly on screen,
 labels startup separately, and reports a failed capture for five seconds instead
 of silently closing. Full spoken capture/reply cycles were observed in device
 logs; the user confirmed that the revised flow works well.
+
+### Shared voice ownership and HomeDash takeover
+
+With `JOHAN2_HOMEDASH_SYNC` enabled, install both `ha/johan2_assist.yaml`
+and HomeDash's `ha/packages/voice_failover.yaml` before flashing this version.
+The latter owns `input_select.voice_device`, the five-second heartbeat helpers,
+and the persisted `input_text.johan2_voice_pipeline` value. Missing ownership
+helpers leave Johan2's automatic wake listener stopped; synchronization-disabled
+standalone builds continue to listen normally.
+
+HA marks Johan2 offline after 20 seconds without an authenticated Assist heartbeat
+(checked every five seconds), then selects HomeDash after a two-second quiet
+handover that first revokes the old listener. Recovery requires ten
+seconds of stable online state and no active HomeDash conversation; an expired
+HomeDash conversation heartbeat prevents a crashed display from blocking handback.
+HomeDash uses Johan2's last reported pipeline, or HA's preferred pipeline if its
+configuration is blank. This shares the assistant configuration, not conversation
+history between devices. Sendspin remains independent of voice availability.
+
+Deploy the HA package and updated HomeDash proxy first, then flash both firmware
+builds. Verify power loss, recovery during a HomeDash reply, HA/proxy reconnects,
+and wake recognition on hardware. Compilation and host tests do not establish
+physical microphone quality or end-to-end failover.

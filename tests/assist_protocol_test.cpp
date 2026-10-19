@@ -179,5 +179,28 @@ int main() {
     assert(command["start_stage"] == "stt" && command["input"]["auto_gain_dbfs"] == 0);
     deserializeJson(command, fixed_gain.begin_stop(""));
     assert(command["input"]["auto_gain_dbfs"] == 0);
+    AssistProtocol owner;
+    owner.receive(R"({"type":"auth_ok"})");
+    deserializeJson(command, owner.subscribe_control());
+    assert(command["entity_ids"][2] == "input_select.voice_device");
+    assert(!owner.owns_voice); // Missing helpers must never enable a second microphone.
+    assert(owner.receive(R"({"id":1,"type":"event","event":{"a":{"input_select.voice_device":{"s":"johan2"}}}})") == Event::OwnerChanged);
+    assert(owner.owns_voice);
+    assert(owner.receive(R"({"id":99,"type":"event","event":{"c":{"input_select.voice_device":{"+":{"s":"homedash"}}}}})") == Event::None);
+    assert(owner.owns_voice); // A stale subscription cannot revoke the live lease.
+    owner.receive(R"({"id":1,"type":"event","event":{"r":["input_button.johan2_assist_start"]}})");
+    assert(owner.owns_voice);
+    assert(owner.receive(R"({"id":1,"type":"event","event":{"c":{"input_select.voice_device":{"+":{"s":"homedash"}}}}})") == Event::OwnerChanged);
+    assert(!owner.owns_voice);
+    owner.receive(R"({"id":1,"type":"event","event":{"a":{"input_select.voice_device":{"s":"johan2"}}}})");
+    assert(owner.receive(R"({"id":1,"type":"event","event":{"r":["input_select.voice_device"]}})") == Event::OwnerChanged);
+    assert(!owner.owns_voice);
+    deserializeJson(command, owner.heartbeat());
+    assert(command["domain"] == "input_button" && command["service"] == "press");
+    assert(command["target"]["entity_id"] == "input_button.johan2_voice_heartbeat");
+    deserializeJson(command, owner.pipeline_update("same-assistant"));
+    assert(command["service_data"]["value"] == "same-assistant");
+    owner.reset();
+    assert(!owner.owns_voice && !owner.authenticated);
     std::cout << "Assist protocol tests passed\n";
 }

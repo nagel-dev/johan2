@@ -5,7 +5,8 @@
 // HA Assist wire state, kept independent of ESP-IDF so it can be tested on a host.
 class AssistProtocol {
 public:
-    enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, SyncError, Transcript, SpeechReady, StopTranscript, PlaybackAccepted, PlaybackFailed, Finished, Error, AuthInvalid };
+    enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, OwnerChanged, SyncError, Transcript, SpeechReady, StopTranscript, PlaybackAccepted, PlaybackFailed, Finished, Error, AuthInvalid };
+    bool owns_voice = false; // Fail closed until HA grants this device voice ownership.
     bool authenticated = false;
     bool running = false;
     bool streaming = false;
@@ -32,7 +33,8 @@ public:
         stop_handler = 0;
         stop_id_ = 0;
         handler = 0;
-        control_id_ = state_id_ = 0;
+        control_id_ = state_id_ = heartbeat_id_ = 0;
+        owns_voice = false;
         last_start_.clear();
         last_cancel_.clear();
         announcement_pending = false;
@@ -113,6 +115,7 @@ public:
         doc["type"] = "subscribe_entities";
         doc["entity_ids"].to<JsonArray>().add("input_button.johan2_assist_start");
         doc["entity_ids"].add("input_button.johan2_assist_cancel");
+        doc["entity_ids"].add("input_select.voice_device");
         std::string result;
         serializeJson(doc, result);
         return result;
@@ -125,6 +128,29 @@ public:
         doc["service"] = "select_option";
         doc["target"]["entity_id"] = "input_select.johan2_assist_state";
         doc["service_data"]["option"] = state;
+        std::string result;
+        serializeJson(doc, result);
+        return result;
+    }
+    std::string heartbeat() {
+        JsonDocument doc;
+        doc["id"] = heartbeat_id_ = ++next_id_;
+        doc["type"] = "call_service";
+        doc["domain"] = "input_button";
+        doc["service"] = "press";
+        doc["target"]["entity_id"] = "input_button.johan2_voice_heartbeat";
+        std::string result;
+        serializeJson(doc, result);
+        return result;
+    }
+    std::string pipeline_update(const char* pipeline) {
+        JsonDocument doc;
+        doc["id"] = ++next_id_;
+        doc["type"] = "call_service";
+        doc["domain"] = "input_text";
+        doc["service"] = "set_value";
+        doc["target"]["entity_id"] = "input_text.johan2_voice_pipeline";
+        doc["service_data"]["value"] = pipeline;
         std::string result;
         serializeJson(doc, result);
         return result;
@@ -146,7 +172,8 @@ public:
         }
         if (type == "result" && doc["success"] == false &&
             ((control_id_ && (doc["id"] | -1) == control_id_) ||
-             (state_id_ && (doc["id"] | -1) == state_id_))) return Event::SyncError;
+             (state_id_ && (doc["id"] | -1) == state_id_) ||
+             (heartbeat_id_ && (doc["id"] | -1) == heartbeat_id_))) return Event::SyncError;
         if (authenticated && control_id_ && type == "event" && (doc["id"] | -1) == control_id_) {
             // Initial/restored snapshots seed timestamps but never replay button presses.
             const auto added = doc["event"]["a"];
@@ -157,7 +184,16 @@ public:
             const auto changed = doc["event"]["c"];
             const bool start = pressed(changed["input_button.johan2_assist_start"]["+"]["s"], last_start_);
             const bool cancel = pressed(changed["input_button.johan2_assist_cancel"]["+"]["s"], last_cancel_);
+            JsonVariantConst owner = changed["input_select.voice_device"]["+"]["s"];
+            if (owner.isNull()) owner = added["input_select.voice_device"]["s"];
+            bool owner_removed = false;
+            for (JsonVariantConst removed : doc["event"]["r"].as<JsonArrayConst>())
+                if (removed.as<std::string>() == "input_select.voice_device") owner_removed = true;
+            const bool owner_seen = owner.is<const char*>() || owner_removed;
+            const bool previous_owner = owns_voice;
+            if (owner_seen) owns_voice = owner.is<const char*>() && owner.as<std::string>() == "johan2";
             if (cancel) return Event::RemoteCancel;
+            if (previous_owner != owns_voice) return Event::OwnerChanged;
             return start ? Event::RemoteStart : Event::None;
         }
         if (stop_running && stop_id_ && (doc["id"] | -1) == stop_id_) {
@@ -302,7 +338,7 @@ private:
         return media;
     }
     int next_id_ = 0;
-    int control_id_ = 0, state_id_ = 0;
+    int control_id_ = 0, state_id_ = 0, heartbeat_id_ = 0;
     std::string last_start_, last_cancel_;
     static bool pressed(JsonVariantConst state, std::string& previous) {
         if (!state.is<const char*>()) return false;
