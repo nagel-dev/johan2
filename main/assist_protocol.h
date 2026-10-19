@@ -62,6 +62,7 @@ public:
         response_media_.clear();
         response_url_.clear();
         response_mime_.clear();
+        reply_text_.clear();
         speech_forwarded_ = false;
         running = true;
         streaming = command_active = false;
@@ -256,6 +257,7 @@ public:
             while (!spoken.empty() && (spoken.back() == ' ' || spoken.back() == '\n' || spoken.back() == '"' || spoken.back() == '\''))
                 spoken.pop_back();
             if (!spoken.empty() && spoken.back() == '?') continue_conversation = true;
+            reply_text_ = spoken;
             if (kind == "error" && (code == "no_intent_match" || code == "no_valid_targets")) unclear = true;
         } else if (event == "stt-vad-end") {
             return Event::Processing;
@@ -293,6 +295,7 @@ public:
     const std::string& transcript() const { return transcript_; }
     const std::string& last_event() const { return last_event_; }
     const std::string& stop_transcript() const { return stop_transcript_; }
+    const std::string& reply_text() const { return reply_text_; }
     std::string reply_url(const char* websocket_url) const {
         // media_id is usually media-source://; the plain url is what HTTP can fetch.
         return resolve_media(response_url_.empty() ? response_media_ : response_url_, websocket_url, false);
@@ -348,6 +351,7 @@ private:
         return true;
     }
     bool speech_forwarded_ = false;
+    std::string reply_text_;
     std::string response_media_;
     std::string response_url_;
     std::string transcript_;

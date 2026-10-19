@@ -2,6 +2,8 @@
 
 ## 2026-10-19 (reply fallback state)
 
+- **Fix** `main/assist_client.cpp` — drop `intent-progress` websocket messages in the callback and enlarge the message queue from 12 to 32, and log why a websocket message is dropped. Serial logs showed a full queue ("WS message queue full") during LLM streaming, which forced an Assist restart and the HomeDash "Failed - try again". Flashed; not yet confirmed on hardware over several questions.
+- **Feature** `main/assist_client.cpp`, `main/assist_protocol.h` — Johan2 posts the spoken reply text to the HomeDash proxy (`/response`, derived from `CONFIG_JOHAN2_HOMEDASH_TRANSCRIPT_URL`) when the reply audio is ready, so HomeDash can show it. Built and flashed; not yet verified on the display.
 - **Fix** `main/assist_client.cpp` — when the direct reply fetch fails and the reply player takes over, Johan2 reports `speaking` instead of `error`, so HomeDash no longer shows "Failed - try again" while the reply is still coming. Flashed; not physically retested.
 - **Finding** the 30 s stall is HA not answering the TTS fetch (the Music Assistant fallback then waits on the same URL). Desktop fetches of the same OpenAI TTS pipeline answered in 1-2 s, so it is intermittent on the HA/OpenAI side.
 

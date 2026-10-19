@@ -36,7 +36,7 @@ void AssistClient::start(AudioOutput* audio) {
     // Never emit WebSocket payloads or authentication data at debug level.
     esp_log_level_set("websocket_client", ESP_LOG_WARN);
     audio_queue_ = xQueueCreate(16, sizeof(Audio)); // At most 256 ms of microphone audio.
-    messages_ = xQueueCreate(12, sizeof(Message));
+    messages_ = xQueueCreate(32, sizeof(Message));
     ESP_ERROR_CHECK(audio_queue_ && messages_ ? ESP_OK : ESP_ERR_NO_MEM);
     esp_websocket_client_config_t cfg{};
     cfg.uri = CONFIG_JOHAN2_HA_WS_URL;
@@ -77,6 +77,7 @@ void AssistClient::event(void* context, esp_event_base_t, int32_t id, void* raw)
         }
         if (!self.receiving_) return;
         if (data.data_len < 0 || self.received_.size() + data.data_len > 16384) {
+            ESP_EARLY_LOGW(TAG, "WS message too large: %d bytes buffered, %d more", (int)self.received_.size(), data.data_len);
             self.receiving_ = false;
             self.transport_failed_.store(true);
             return;
@@ -84,9 +85,12 @@ void AssistClient::event(void* context, esp_event_base_t, int32_t id, void* raw)
         self.received_.append(data.data_ptr, data.data_len);
         if (!data.fin || data.payload_offset + data.data_len != data.payload_len) return;
         self.receiving_ = false;
+        // LLM streaming sends many tiny progress events. Nothing uses them, and a burst can overflow the queue.
+        if (self.received_.find("\"intent-progress\"") != std::string::npos) return;
         message.text = strdup(self.received_.c_str());
         if (!message.text) { self.transport_failed_.store(true); return; }
     } else if (id == WEBSOCKET_EVENT_CONNECTED || id == WEBSOCKET_EVENT_DISCONNECTED) {
+        if (id == WEBSOCKET_EVENT_DISCONNECTED) ESP_EARLY_LOGW(TAG, "WS disconnected");
         self.accepting_.store(false);
         self.command_active_.store(false);
         self.received_.clear();
@@ -95,6 +99,7 @@ void AssistClient::event(void* context, esp_event_base_t, int32_t id, void* raw)
         return;
     }
     if (xQueueSend(self.messages_, &message, 0) != pdTRUE) {
+        ESP_EARLY_LOGW(TAG, "WS message queue full, event %d dropped", (int)id);
         free(message.text);
         self.transport_failed_.store(true);
     }
@@ -165,20 +170,33 @@ void AssistClient::forward_to_player() {
     }
 }
 
-// Shows what Assist heard on HomeDash (via its proxy). Best effort, off the websocket task.
-static void post_transcript(void* context) {
-    std::unique_ptr<std::string> text(static_cast<std::string*>(context));
+// Shows what Assist heard or answered on HomeDash (via its proxy). Best effort, off the websocket task.
+struct HomeDashPost { std::string path; std::string text; };
+
+static void post_homedash_text(void* context) {
+    std::unique_ptr<HomeDashPost> post(static_cast<HomeDashPost*>(context));
+    std::string url = CONFIG_JOHAN2_HOMEDASH_TRANSCRIPT_URL;
+    const auto slash = url.rfind('/');
+    if (slash == std::string::npos) { vTaskDelete(nullptr); return; }
+    url.resize(slash + 1);
+    url += post->path;
     esp_http_client_config_t config{};
-    config.url = CONFIG_JOHAN2_HOMEDASH_TRANSCRIPT_URL;
+    config.url = url.c_str();
     config.method = HTTP_METHOD_POST;
     config.timeout_ms = 3000;
     if (auto client = esp_http_client_init(&config)) {
         esp_http_client_set_header(client, "Content-Type", "text/plain; charset=utf-8");
-        esp_http_client_set_post_field(client, text->c_str(), text->size());
-        if (esp_http_client_perform(client) != ESP_OK) ESP_LOGW(TAG, "Could not send transcript to HomeDash");
+        esp_http_client_set_post_field(client, post->text.c_str(), post->text.size());
+        if (esp_http_client_perform(client) != ESP_OK) ESP_LOGW(TAG, "Could not send %s to HomeDash", post->path.c_str());
         esp_http_client_cleanup(client);
     }
     vTaskDelete(nullptr);
+}
+
+static void send_to_homedash(const char* path, const std::string& text) {
+    if (!CONFIG_JOHAN2_HOMEDASH_TRANSCRIPT_URL[0] || text.empty()) return;
+    auto* post = new HomeDashPost{path, text};
+    if (xTaskCreate(post_homedash_text, "hd_post", 4096, post, 3, nullptr) != pdPASS) delete post;
 }
 
 void AssistClient::task(void* context) { static_cast<AssistClient*>(context)->run(); }
@@ -311,10 +329,7 @@ void AssistClient::run() {
                         cancel_command(false);
                         continue;
                     }
-                    if (CONFIG_JOHAN2_HOMEDASH_TRANSCRIPT_URL[0]) {
-                        auto* text = new std::string(protocol_.transcript());
-                        if (xTaskCreate(post_transcript, "transcript", 4096, text, 3, nullptr) != pdPASS) delete text;
-                    }
+                    send_to_homedash("transcript", protocol_.transcript());
                 } else if (result == AssistProtocol::Event::StopTranscript) {
                     ESP_LOGI(TAG, "Heard while busy: %s", protocol_.stop_transcript().c_str());
                     if (is_stop_phrase(protocol_.stop_transcript())) {
@@ -327,6 +342,7 @@ void AssistClient::run() {
                     publish_state("speaking");
                     speech_at_ = esp_timer_get_time();
                     ESP_LOGI(TAG, "Reply audio ready %lld ms after wake word", (long long)((speech_at_ - wake_at_) / 1000));
+                    send_to_homedash("response", protocol_.reply_text());
                     reset_audio();
                     const std::string url = kDirectReplies ? protocol_.reply_url(CONFIG_JOHAN2_HA_WS_URL) : std::string{};
                     if (!url.empty() && tts_.start(url)) {
