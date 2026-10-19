@@ -4,7 +4,6 @@
 #include "mic_diagnostics.h"
 #include "mic_pcm.h"
 #include "mic_aec.h"
-#include "mic_gain_control.h"
 #if CONFIG_JOHAN2_MIC_PROFILE_DENOISE
 #include "mic_denoise.h"
 #endif
@@ -350,13 +349,6 @@ void AudioOutput::microphone_task(void* context) {
     static int32_t samples[capture_size];
     static int16_t pcm[capture_size];
     MicPcm converter(CONFIG_JOHAN2_MIC_HIGHPASS_HZ);
-#ifdef CONFIG_JOHAN2_MIC_AUTO_GAIN
-    constexpr bool auto_gain = true;
-#else
-    constexpr bool auto_gain = false;
-#endif
-    MicGainControl gain_control(auto_gain, CONFIG_JOHAN2_MIC_GAIN, CONFIG_JOHAN2_MIC_MAX_GAIN);
-    static float filtered_pcm[capture_size]; // Capture-task scratch; keep the 4 KB stack bounded.
 #if CONFIG_JOHAN2_MIC_PROFILE_DENOISE
     // Fixed storage in BSS: the FFT buffers must not consume the 4 KB task stack.
     static MicDenoise denoiser(true, CONFIG_JOHAN2_MIC_HIGHPASS_HZ);
@@ -425,19 +417,18 @@ void AudioOutput::microphone_task(void* context) {
 #if CONFIG_JOHAN2_MIC_PROFILE_DENOISE
             filtered = denoiser.process(filtered);
 #endif
-            filtered_pcm[i] = filtered;
+            pcm[i] = MicPcm::quantize(filtered, CONFIG_JOHAN2_MIC_GAIN);
         }
-        gain_control.process(filtered_pcm, pcm, count);
         uint32_t processing_us = esp_timer_get_time() - processing_started;
 #if CONFIG_JOHAN2_MIC_AEC
         processing_us += aec_processing_us;
         aec_processing_us = 0;
         mic_diagnostics::aec_status(aec.ready(), aec.frames(), aec.missing(), aec.gaps(),
                                     self.reference_drops_.load(), self.microphone_drops_.load());
-        mic_diagnostics::feed(samples, pcm, count, err != ESP_OK, processing_us, gain_control.gain(),
+        mic_diagnostics::feed(samples, pcm, count, err != ESP_OK, processing_us, CONFIG_JOHAN2_MIC_GAIN,
                               aec.reference(), aec.clean());
 #else
-        mic_diagnostics::feed(samples, pcm, count, err != ESP_OK, processing_us, gain_control.gain());
+        mic_diagnostics::feed(samples, pcm, count, err != ESP_OK, processing_us, CONFIG_JOHAN2_MIC_GAIN);
 #endif
         if (self.assist_) {
             for (size_t offset = 0; offset < count; offset += AssistClient::SAMPLES)

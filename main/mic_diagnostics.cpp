@@ -111,19 +111,14 @@ esp_err_t record(httpd_req_t* req) {
 #else
     constexpr int denoise = 0, delay_samples = 0;
 #endif
-#ifdef CONFIG_JOHAN2_MIC_AUTO_GAIN
-    constexpr int agc = 1;
-#else
-    constexpr int agc = 0;
-#endif
     char metrics[768];
     snprintf(metrics, sizeof(metrics),
-             "rms_dbfs=%.1f; peak_dbfs=%.1f; clipped=%u; read_errors=%u; elapsed_ms=%lld; max_block_interval_ms=%.1f; gain=%d; highpass_hz=%d; profile_denoise=%d; delay_samples=%d; max_processing_us=%u; agc=%d; max_gain=%d; effective_gain_min=%.3f; effective_gain_max=%.3f; aec=%d; aec_frame_samples=%d; aec_reference_delay_ms=%d; aec_frames=%u; aec_missing_samples=%u; aec_reference_gaps=%u; aec_reference_drops=%u; aec_mic_drops=%u",
+             "rms_dbfs=%.1f; peak_dbfs=%.1f; clipped=%u; read_errors=%u; elapsed_ms=%lld; max_block_interval_ms=%.1f; gain=%d; highpass_hz=%d; profile_denoise=%d; delay_samples=%d; max_processing_us=%u; agc=0; effective_gain_min=%.3f; effective_gain_max=%.3f; aec=%d; aec_frame_samples=%d; aec_reference_delay_ms=%d; aec_frames=%u; aec_missing_samples=%u; aec_reference_gaps=%u; aec_reference_drops=%u; aec_mic_drops=%u",
              20 * std::log10(std::max(rms, 0.000001) / 32768),
              20 * std::log10(std::max(double(peak), 0.000001) / 32768),
              unsigned(clipped), read_errors, static_cast<long long>(elapsed / 1000),
              max_interval / 1000.0, CONFIG_JOHAN2_MIC_GAIN, CONFIG_JOHAN2_MIC_HIGHPASS_HZ,
-             denoise, delay_samples, unsigned(max_processing_us), agc, CONFIG_JOHAN2_MIC_MAX_GAIN,
+             denoise, delay_samples, unsigned(max_processing_us),
              minimum_gain, maximum_gain, int(aec_ready.load()),
 #if CONFIG_JOHAN2_MIC_AEC
              512, requested_delay.load(),

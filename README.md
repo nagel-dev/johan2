@@ -450,7 +450,6 @@ CONFIG_JOHAN2_MIC_GAIN=4
 CONFIG_JOHAN2_MIC_HIGHPASS_HZ=180
 CONFIG_JOHAN2_MIC_PROFILE_DENOISE=y
 CONFIG_JOHAN2_MIC_DIAGNOSTICS=y
-# CONFIG_JOHAN2_MIC_AUTO_GAIN is not set
 ```
 
 Repository defaults remain gain 16 / HP100 with profile suppression and HTTP
@@ -460,47 +459,12 @@ listening improvement is unproven. Build with `./scripts/idf.sh build` after
 applying local settings, then flash the intended device. Listening feedback does
 not establish clipping-free operation at every music level or Assist recognition.
 
-### Optional dynamic microphone gain
+### Fixed microphone gain
 
-`JOHAN2_MIC_AUTO_GAIN` adds a small capture-task gain controller after noise
-suppression and before PCM quantization. It is off by default. The earlier local
-trial used baseline gain 4 and maximum gain 16; AEC testing now disables automatic
-gain and uses fixed gain 4 so output-level changes do not confound comparison.
-To enable the optional controller again:
-
-```ini
-CONFIG_JOHAN2_MIC_AUTO_GAIN=y
-CONFIG_JOHAN2_MIC_GAIN=4
-CONFIG_JOHAN2_MIC_MAX_GAIN=16
-```
-
-The controller measures the already captured block's peak and RMS. It limits the
-very first sample of unexpected peaks to 85% full scale (about −1.4 dBFS), allows
-gain below unity when necessary, and holds a peak envelope with a 400 ms decay.
-Level-driven reduction has a 10 ms time constant; gain recovery has a 1.5 s time
-constant. RMS tracking uses 80 ms smoothing and targets roughly −18 dBFS, within
-the maximum and peak limits. Below pre-gain RMS 32 (about −60 dBFS), gain returns
-only to the baseline rather than rising toward the maximum. This energy threshold
-is not a voice classifier: music and voice can both open it. A 300 ms activity
-hold spans short word gaps before returning to the baseline. The block peak ceiling
-always takes priority, including over the quiet baseline.
-
-The controller introduces no additional block delay, uses fixed scratch storage
-outside the microphone task's 4 KB stack, and performs no allocation or networking.
-The profile suppressor's existing 32 ms delay is unchanged. Disable AUTO_GAIN to
-restore exact fixed-gain behavior; the profile model remains normalized before
-gain and does not need recalibration. AGC controls level, not the voice/music ratio,
-and cannot restore audio clipped in the microphone or remove acoustic echo.
-
-`X-Mic-Metrics` now reports `agc`, `max_gain` and the minimum/maximum block-end
-`effective_gain` during capture; `gain` remains the configured fixed/quiet baseline.
-These extrema are block-end observations, not exact per-sample gain extrema.
-Verify same-volume music clipping and quiet speech recognition on hardware.
-
-```sh
-c++ -O2 -std=c++17 -Wall -Wextra -Werror -I main tests/mic_gain_control_test.cpp -o /tmp/johan2-gain-control-test
-/tmp/johan2-gain-control-test
-```
+Microphone PCM uses only the fixed `JOHAN2_MIC_GAIN` multiplier after noise
+suppression. Automatic microphone gain control has been removed, and all HA
+Assist requests explicitly disable HA automatic gain. `X-Mic-Metrics` reports
+`agc=0` and the fixed effective gain during capture.
 
 ### HomeDash listening state and remote wake
 

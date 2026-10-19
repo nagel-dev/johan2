@@ -14,6 +14,7 @@ int main() {
     assert(command["id"] == 1 && command["pipeline"] == "my-pipeline");
     assert(command["start_stage"] == "wake_word" && command["end_stage"] == "intent");
     assert(command["input"]["sample_rate"] == 16000);
+    assert(command["input"]["auto_gain_dbfs"] == 0);
     assert(p.running && !p.streaming);
     p.receive(R"({"id":99,"type":"event","event":{"type":"run-start","data":{"runner_data":{"stt_binary_handler_id":8}}}})");
     assert(!p.streaming); // Stale/unrelated runs must not change the audio routing.
@@ -173,5 +174,10 @@ int main() {
     assert(!unclear.wants_followup(true, true));
     unclear.reset();
     assert(!unclear.unclear && !unclear.continue_conversation && !unclear.speech_started);
+    AssistProtocol fixed_gain;
+    deserializeJson(command, fixed_gain.begin("", true, nullptr, true));
+    assert(command["start_stage"] == "stt" && command["input"]["auto_gain_dbfs"] == 0);
+    deserializeJson(command, fixed_gain.begin_stop(""));
+    assert(command["input"]["auto_gain_dbfs"] == 0);
     std::cout << "Assist protocol tests passed\n";
 }

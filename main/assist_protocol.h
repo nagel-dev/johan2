@@ -50,7 +50,8 @@ public:
         doc["input"]["sample_rate"] = 16000;
         doc["input"]["timeout"] = 30;
         doc["input"]["noise_suppression_level"] = 2;
-        doc["input"]["auto_gain_dbfs"] = 31;
+        // Firmware already owns microphone gain; do not re-level residual echo/noise in HA.
+        doc["input"]["auto_gain_dbfs"] = 0;
         if (pipeline && *pipeline) doc["pipeline"] = pipeline;
         if (conversation_id && *conversation_id) doc["conversation_id"] = conversation_id;
         error_code_.clear();
@@ -76,7 +77,8 @@ public:
         doc["input"]["sample_rate"] = 16000;
         doc["input"]["timeout"] = 10;
         doc["input"]["noise_suppression_level"] = 2;
-        doc["input"]["auto_gain_dbfs"] = 31;
+        // Firmware already owns microphone gain; do not re-level residual echo/noise in HA.
+        doc["input"]["auto_gain_dbfs"] = 0;
         if (pipeline && *pipeline) doc["pipeline"] = pipeline;
         stop_running = true;
         stop_streaming = false;

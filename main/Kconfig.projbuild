@@ -86,19 +86,6 @@ menu "Johan2 Player Configuration"
         int "Microphone PCM gain for Assist"
         range 1 32
         default 16
-    config JOHAN2_MIC_AUTO_GAIN
-        bool "Automatically control microphone gain before PCM clipping"
-        default n
-        help
-            Fast peak protection and slow gain recovery after noise suppression.
-            MIC_GAIN is the startup/quiet baseline. Below the activity threshold
-            gain returns only to this baseline, not the maximum.
-    config JOHAN2_MIC_MAX_GAIN
-        int "Maximum automatic microphone gain"
-        range 1 32
-        default 16
-        help
-            Upper gain limit when automatic gain is enabled; ignored otherwise.
     config JOHAN2_MIC_HIGHPASS_HZ
         int "Microphone rumble high-pass cutoff (Hz; 0 disables)"
         range 0 300
