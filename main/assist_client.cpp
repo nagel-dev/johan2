@@ -15,6 +15,12 @@
 
 static const char* TAG = "assist";
 static constexpr bool kDirectReplies = CONFIG_JOHAN2_TTS_DIRECT;
+static constexpr bool kStopListener =
+#ifdef CONFIG_JOHAN2_STOP_LISTENER
+    true;
+#else
+    false;
+#endif
 
 void AssistClient::start(AudioOutput* audio) {
     if (!strlen(CONFIG_JOHAN2_HA_TOKEN)) {
@@ -123,6 +129,8 @@ static bool is_stop_phrase(const std::string& text) {
 }
 
 void AssistClient::cancel_command(bool stop_playback) {
+    followup_ = false;
+    followup_deadline_ = 0;
     remote_start_pending_ = false;
     reset_audio();
     if (stop_playback && direct_playing_) tts_.cancel();
@@ -174,11 +182,15 @@ void AssistClient::run() {
         if (failed ||
             (protocol_.running && esp_timer_get_time() >= run_deadline_) ||
             (protocol_.announcement_pending && esp_timer_get_time() >= announcement_deadline_)) {
+            ESP_LOGW(TAG, "Restarting Assist: %s (state %s)",
+                     failed ? "transport failure" : "pipeline/playback timeout", assist_state_);
             publish_state("error");
             reset_audio();
             // Must be called outside the WebSocket callback/task.
             esp_websocket_client_stop(socket_);
             protocol_.reset();
+            remote_start_pending_ = followup_ = false;
+            followup_deadline_ = 0;
             Message stale;
             while (xQueueReceive(messages_, &stale, 0) == pdTRUE) free(stale.text);
             vTaskDelay(pdMS_TO_TICKS(2000));
@@ -189,11 +201,20 @@ void AssistClient::run() {
             if (message.type == WEBSOCKET_EVENT_CONNECTED || message.type == WEBSOCKET_EVENT_DISCONNECTED) {
                 reset_audio();
                 protocol_.reset();
+                remote_start_pending_ = followup_ = false;
+                followup_deadline_ = 0;
+                publish_state("offline");
                 ESP_LOGI(TAG, "%s", message.type == WEBSOCKET_EVENT_CONNECTED ? "HA connected" : "HA disconnected");
             } else if (message.text) {
                 const bool was_streaming = protocol_.any_streaming();
                 const auto result = protocol_.receive(message.text);
                 free(message.text);
+                if (protocol_.last_event() == "run-start" && !followup_ &&
+                    strcmp(assist_state_, "starting") != 0)
+                    run_deadline_ = esp_timer_get_time() + 310000000;
+                if (protocol_.running && result != AssistProtocol::Event::Authenticate && !protocol_.last_event().empty() &&
+                    protocol_.last_event() != "intent-progress")
+                    ESP_LOGI(TAG, "run event %s", protocol_.last_event().c_str());
                 if (result == AssistProtocol::Event::Authenticate) {
                     JsonDocument auth;
                     auth["type"] = "auth";
@@ -220,10 +241,17 @@ void AssistClient::run() {
                 } else if (result == AssistProtocol::Event::RemoteStart) {
                     // HA cancels an Assist run through its normal subscription API.
                     // Keep the authenticated socket, avoiding reconnect latency.
+                    // Pressing start while processing/speaking interrupts that work (barge-in).
                     if (!remote_start_pending_ && strcmp(assist_state_, "starting") != 0 &&
-                        !protocol_.command_active && !direct_playing_ && !protocol_.announcement_pending) {
+                        strcmp(assist_state_, "listening") != 0 && !protocol_.announcement_pending) {
+                        followup_ = false;
+                        followup_deadline_ = 0;
+                        followup_used_ = false;
+                        followup_count_ = 0;
                         remote_start_pending_ = true;
                         reset_audio();
+                        if (direct_playing_) tts_.cancel();
+                        if (protocol_.stop_running && !send_text(protocol_.cancel_stop())) transport_failed_.store(true);
                         if (protocol_.running && !send_text(protocol_.cancel_run())) transport_failed_.store(true);
                         retry_at_ = 0;
                         publish_state("starting");
@@ -234,18 +262,26 @@ void AssistClient::run() {
                         direct_playing_) {
                         ESP_LOGI(TAG, "Cancelled by button");
                         cancel_command(true);
+                    } else {
+                        publish_state("idle", true);
                     }
                 } else if (result == AssistProtocol::Event::Wake) {
                     wake_at_ = conversation_last_ = esp_timer_get_time();
+                    followup_used_ = false;
+                    followup_count_ = 0;
                     ESP_LOGI(TAG, "Wake word detected; listening for command");
                     publish_state("listening");
                 } else if (result == AssistProtocol::Event::Listening) {
                     if (!wake_at_ || strcmp(assist_state_, "starting") == 0)
                         wake_at_ = conversation_last_ = esp_timer_get_time();
+                    if (followup_) followup_deadline_ = esp_timer_get_time() + kFollowupUs;
+                    run_deadline_ = esp_timer_get_time() + 45000000;
                     publish_state("listening");
                 } else if (result == AssistProtocol::Event::Processing) {
+                    run_deadline_ = esp_timer_get_time() + 120000000;
                     publish_state("processing");
                 } else if (result == AssistProtocol::Event::Transcript) {
+                    run_deadline_ = esp_timer_get_time() + 120000000;
                     publish_state("processing");
                     ESP_LOGI(TAG, "Heard: %s", protocol_.transcript().c_str());
                     if (is_stop_phrase(protocol_.transcript())) {
@@ -287,11 +323,31 @@ void AssistClient::run() {
                     retry_at_ = esp_timer_get_time() + (success ? 1500000 : 10000000);
                     publish_state(success ? "idle" : "error");
                 } else if (result == AssistProtocol::Event::Error || result == AssistProtocol::Event::Finished) {
-                    if (!direct_playing_ && !protocol_.announcement_pending)
-                        publish_state(result == AssistProtocol::Event::Error ? "error" : "idle");
-                    reset_audio();
-                    retry_at_ = std::max(retry_at_, esp_timer_get_time() + (result == AssistProtocol::Event::Error ? 10000000 : 250000));
-                    if (result == AssistProtocol::Event::Error) ESP_LOGW(TAG, "Assist run failed: %s", protocol_.error_code().c_str());
+                    const bool was_followup = followup_;
+                    followup_ = false;
+                    followup_deadline_ = 0;
+                    if (followup_count_ < 3 && protocol_.wants_followup(was_followup, followup_used_)) {
+                        ++followup_count_;
+                        // Let the user repeat the command without the wake word.
+                        followup_used_ = followup_ = remote_start_pending_ = true;
+                        reset_audio();
+                        retry_at_ = esp_timer_get_time() + 200000;
+                        publish_state("starting");
+                        ESP_LOGI(TAG, "%s; listening again without wake word",
+                                 protocol_.continue_conversation ? "Agent expects an answer" : "Command unclear");
+                    } else if (protocol_.unclear && was_followup) {
+                        // No clear follow-up either: stay quiet and rearm the wake word.
+                        if (!direct_playing_ && !protocol_.announcement_pending) publish_state("idle");
+                        reset_audio();
+                        retry_at_ = std::max(retry_at_, esp_timer_get_time() + 250000);
+                    } else {
+                        if (!direct_playing_ && !protocol_.announcement_pending)
+                            publish_state(result == AssistProtocol::Event::Error ? "error" : "idle");
+                        reset_audio();
+                        retry_at_ = std::max(retry_at_, esp_timer_get_time() + (result == AssistProtocol::Event::Error ? 10000000 : 250000));
+                        if (result == AssistProtocol::Event::Error) ESP_LOGW(TAG, "Assist run failed: %s", protocol_.error_code().c_str());
+                        if (!protocol_.unclear) followup_used_ = false;
+                    }
                 }
                 const bool streaming = protocol_.any_streaming();
                 if (!was_streaming && streaming) {
@@ -312,11 +368,21 @@ void AssistClient::run() {
         // Reassert the device-owned state so a missed initial update self-heals.
         if (protocol_.authenticated && now >= state_refresh_at_) publish_state(assist_state_, true);
 #endif
+        if (followup_deadline_ && protocol_.speech_started && !followup_speech_seen_) {
+            followup_speech_seen_ = true;
+            // VAD can fire on noise: bound recognition as well as initial silence.
+            followup_deadline_ = now + 15000000;
+        }
+        if (followup_deadline_ && !protocol_.transcript().empty()) followup_deadline_ = 0;
+        if (followup_deadline_ && now >= followup_deadline_) {
+            ESP_LOGI(TAG, "No follow-up speech; back to wake word");
+            cancel_command(false);
+        }
         if (direct_playing_) {
             const auto result = tts_.poll();
             if (result != TtsPlayer::None) {
                 direct_playing_ = false;
-                publish_state(result == TtsPlayer::Ok ? "idle" : "error");
+                if (!remote_start_pending_) publish_state(result == TtsPlayer::Ok ? "idle" : "error");
                 ESP_LOGI(TAG, "Direct reply %s %lld ms after audio ready", result == TtsPlayer::Ok ? "played" : "failed",
                          (long long)((now - speech_at_) / 1000));
                 if (result == TtsPlayer::Unsupported && strlen(CONFIG_JOHAN2_HA_REPLY_PLAYER)) forward_to_player();
@@ -327,7 +393,7 @@ void AssistClient::run() {
             }
         }
         // Keep a short "stop" listener alive while the answer is processed or spoken.
-        const bool busy = protocol_.authenticated && !protocol_.announcement_pending &&
+        const bool busy = kStopListener && protocol_.authenticated && !protocol_.announcement_pending &&
                           ((protocol_.running && !protocol_.streaming && strcmp(assist_state_, "processing") == 0) || direct_playing_);
         if (busy && !protocol_.stop_running && now >= stop_retry_at_) {
             stop_retry_at_ = now + 300000;
@@ -338,7 +404,9 @@ void AssistClient::run() {
         }
         if (protocol_.authenticated && !protocol_.running && !protocol_.announcement_pending && !direct_playing_ && now >= retry_at_) {
             reset_audio();
-            run_deadline_ = now + 310000000;
+            // A pipeline that never starts must not leave the UI on "starting" for five minutes.
+            run_deadline_ = now + 10000000;
+            followup_speech_seen_ = false;
             // Reuse one conversation so the agent keeps context across turns; start a
             // new one after a long idle gap.
             if (conversation_id_[0] == '\0' || now - conversation_last_ > kConversationIdleUs) {

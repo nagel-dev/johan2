@@ -52,4 +52,11 @@ private:
     const char* assist_state_{"offline"};
     int64_t state_refresh_at_{0};
     int64_t stop_retry_at_{0};
+    // One wake-word-free retry after an unclear command; gives up after kFollowupUs without speech.
+    static constexpr int64_t kFollowupUs = 3000000;
+    unsigned followup_count_{0};
+    bool followup_used_{false};
+    bool followup_{false};
+    bool followup_speech_seen_{false};
+    int64_t followup_deadline_{0};
 };

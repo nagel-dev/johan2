@@ -141,5 +141,37 @@ int main() {
     assert(!cancel.stop_running);
     deserializeJson(command, cancel.cancel_stop());
     assert(command["type"] == "unsubscribe_events");
+    AssistProtocol unclear;
+    unclear.begin("", true, nullptr, true);
+    assert(!unclear.unclear && !unclear.speech_started);
+    unclear.receive(R"({"id":1,"type":"event","event":{"type":"stt-vad-start"}})");
+    assert(unclear.speech_started);
+    unclear.receive(R"({"id":1,"type":"event","event":{"type":"intent-end","data":{"intent_output":{"response":{"response_type":"error","data":{"code":"no_intent_match"}}}}}})");
+    assert(unclear.unclear);
+    unclear.begin("", true, nullptr, true);
+    assert(unclear.receive(R"({"id":2,"type":"event","event":{"type":"error","data":{"code":"stt-no-text-recognized"}}})") == Event::Error);
+    assert(unclear.unclear);
+    unclear.begin("", true, nullptr, true);
+    unclear.receive(R"({"id":3,"type":"event","event":{"type":"intent-end","data":{"intent_output":{"continue_conversation":true,"response":{"response_type":"action_done"}}}}})");
+    assert(unclear.continue_conversation && !unclear.unclear);
+    unclear.begin("", true, nullptr, true);
+    unclear.receive(R"({"id":4,"type":"event","event":{"type":"intent-end","data":{"intent_output":{"response":{"response_type":"action_done","speech":{"plain":{"speech":"Welke kamer? "}}}}}}})");
+    assert(unclear.continue_conversation);
+    unclear.begin("", true, nullptr, true);
+    unclear.receive(R"({"id":5,"type":"event","event":{"type":"intent-end","data":{"intent_output":{"response":{"response_type":"action_done","speech":{"plain":{"speech":"Klaar."}}}}}}})");
+    assert(!unclear.continue_conversation);
+    assert(!unclear.wants_followup(true, true));
+    unclear.continue_conversation = true;
+    assert(unclear.wants_followup(false, false));
+    assert(!unclear.wants_followup(true, true)); // VAD alone cannot repeat a question.
+    unclear.receive(R"({"id":5,"type":"event","event":{"type":"stt-end","data":{"stt_output":{"text":"Keuken"}}}})");
+    assert(unclear.wants_followup(true, true));
+    unclear.begin("", true, nullptr, true);
+    assert(unclear.transcript().empty());
+    unclear.unclear = true;
+    assert(unclear.wants_followup(false, false));
+    assert(!unclear.wants_followup(true, true));
+    unclear.reset();
+    assert(!unclear.unclear && !unclear.continue_conversation && !unclear.speech_started);
     std::cout << "Assist protocol tests passed\n";
 }

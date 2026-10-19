@@ -47,6 +47,12 @@ menu "Johan2 Player Configuration"
     config JOHAN2_HA_PIPELINE
         string "Assist pipeline ID (blank uses preferred assistant)"
         default ""
+    config JOHAN2_STOP_LISTENER
+        bool "Listen for a spoken stop while an answer is processed or spoken"
+        default n
+        help
+            Runs an extra STT-only Assist session during processing and replies. It costs extra STT
+            calls and may transcribe noise or the reply; disabled by default.
     config JOHAN2_HA_REPLY_PLAYER
         string "HA media_player entity for spoken replies (blank disables)"
         default ""

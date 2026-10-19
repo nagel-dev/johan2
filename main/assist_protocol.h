@@ -10,6 +10,9 @@ public:
     bool running = false;
     bool streaming = false;
     bool command_active = false;
+    bool unclear = false;        // STT heard nothing or the agent did not understand
+    bool continue_conversation = false; // the agent asked a question and expects an answer
+    bool speech_started = false; // HA reported voice activity in this run
     uint8_t handler = 0;
     int run_id = 0;
     bool announcement_pending = false;
@@ -23,6 +26,8 @@ public:
 
     void reset() {
         authenticated = running = streaming = command_active = false;
+        unclear = speech_started = continue_conversation = false;
+        transcript_.clear();
         stop_running = stop_streaming = false;
         stop_handler = 0;
         stop_id_ = 0;
@@ -49,6 +54,8 @@ public:
         if (pipeline && *pipeline) doc["pipeline"] = pipeline;
         if (conversation_id && *conversation_id) doc["conversation_id"] = conversation_id;
         error_code_.clear();
+        unclear = speech_started = continue_conversation = false;
+        transcript_.clear();
         response_media_.clear();
         response_url_.clear();
         response_mime_.clear();
@@ -121,6 +128,7 @@ public:
         return result;
     }
     Event receive(const char* text) {
+        last_event_.clear();
         JsonDocument doc;
         if (deserializeJson(doc, text, DeserializationOption::NestingLimit(24))) {
             finish();
@@ -182,6 +190,7 @@ public:
         }
         if (type != "event") return Event::None;
         const std::string event = doc["event"]["type"] | "";
+        last_event_ = event;
         if (event == "run-start") {
             const auto id = doc["event"]["data"]["runner_data"]["stt_binary_handler_id"];
             if (!id.is<int>() || id.as<int>() < 1 || id.as<int>() > 255) {
@@ -198,6 +207,18 @@ public:
         } else if (event == "stt-start") {
             command_active = true;
             return Event::Listening;
+        } else if (event == "stt-vad-start") {
+            speech_started = true;
+        } else if (event == "intent-end") {
+            const std::string kind = doc["event"]["data"]["intent_output"]["response"]["response_type"] | "";
+            const std::string code = doc["event"]["data"]["intent_output"]["response"]["data"]["code"] | "";
+            if (doc["event"]["data"]["intent_output"]["continue_conversation"] == true) continue_conversation = true;
+            // HA's flag is not always set; a spoken reply ending in a question also expects an answer.
+            std::string spoken = doc["event"]["data"]["intent_output"]["response"]["speech"]["plain"]["speech"] | "";
+            while (!spoken.empty() && (spoken.back() == ' ' || spoken.back() == '\n' || spoken.back() == '"' || spoken.back() == '\''))
+                spoken.pop_back();
+            if (!spoken.empty() && spoken.back() == '?') continue_conversation = true;
+            if (kind == "error" && (code == "no_intent_match" || code == "no_valid_targets")) unclear = true;
         } else if (event == "stt-vad-end") {
             return Event::Processing;
         } else if (event == "stt-end") {
@@ -217,6 +238,7 @@ public:
             return Event::Finished;
         } else if (event == "error") {
             error_code_ = doc["event"]["data"]["code"] | "unknown";
+            if (error_code_ == "stt-no-text-recognized") unclear = true;
             finish();
             // Quiet rooms routinely time out; rearm promptly instead of backing off.
             if (doc["event"]["data"]["code"] == "wake-word-timeout") return Event::Finished;
@@ -224,8 +246,14 @@ public:
         }
         return Event::None;
     }
+    // A second automatic turn requires actual recognized input, not just VAD noise.
+    bool wants_followup(bool already_followup, bool retry_used) const {
+        return (continue_conversation && (!already_followup || !transcript_.empty())) ||
+               (unclear && !retry_used && !already_followup);
+    }
     // Absolute http(s) URL of the generated reply, or empty. Does not consume the reply.
     const std::string& transcript() const { return transcript_; }
+    const std::string& last_event() const { return last_event_; }
     const std::string& stop_transcript() const { return stop_transcript_; }
     std::string reply_url(const char* websocket_url) const {
         // media_id is usually media-source://; the plain url is what HTTP can fetch.
@@ -286,6 +314,7 @@ private:
     std::string response_url_;
     std::string transcript_;
     std::string stop_transcript_;
+    std::string last_event_;
     int stop_id_ = 0;
     std::string error_code_;
     std::string response_mime_;
