@@ -74,7 +74,6 @@ extern "C" void app_main() {
     audio.init(player, &assist);
     mic_diagnostics::start();
     player.set_listener(&audio);
-    player.update_volume(CONFIG_JOHAN2_INITIAL_VOLUME);
     client.set_network_provider(&network);
     client.set_persistence_provider(&persistence);
     if (!client.start()) {

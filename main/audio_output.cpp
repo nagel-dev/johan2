@@ -27,6 +27,19 @@ static_assert(CONFIG_JOHAN2_I2S_BCLK != CONFIG_JOHAN2_I2S_LRCK &&
 void AudioOutput::init(sendspin::PlayerRole& player, AssistClient* assist) {
     assist_ = assist;
     player_ = &player;
+    ESP_ERROR_CHECK(nvs_open("sendspin", NVS_READWRITE, &volume_nvs_));
+    uint8_t saved_volume = 0;
+    const esp_err_t volume_err = nvs_get_u8(volume_nvs_, "volume", &saved_volume);
+    if (volume_err == ESP_OK) {
+        if (saved_volume <= 100) volume_.store(saved_volume);
+        else ESP_LOGW(TAG, "Saved player volume is invalid; starting muted");
+    } else if (volume_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_ERROR_CHECK(volume_err);
+    }
+    volume_save_timer_ = xTimerCreate("volume_save", VOLUME_SAVE_DELAY, pdFALSE, this,
+                                      save_volume_timer_cb);
+    ESP_ERROR_CHECK(volume_save_timer_ ? ESP_OK : ESP_ERR_NO_MEM);
+    player.update_volume(volume_.load());
 #if CONFIG_JOHAN2_LED_GPIO >= 0
     // WS2812 at 10 MHz ticks: bit0 = 0.3/0.9 us, bit1 = 0.9/0.3 us.
     rmt_tx_channel_config_t tx{};
@@ -76,7 +89,6 @@ void AudioOutput::init(sendspin::PlayerRole& player, AssistClient* assist) {
     mic_callbacks.on_recv = received;
     ESP_ERROR_CHECK(i2s_channel_register_event_callback(mic_rx_, &mic_callbacks, this));
 #endif
-    volume_.store(CONFIG_JOHAN2_INITIAL_VOLUME);
     tx_lock_ = xSemaphoreCreateMutex();
     // TTS is copied through task-local I2S scratch buffers, never used directly
     // by DMA/ISR. Keep its 32 KB payload out of scarce internal/DMA RAM.
@@ -118,6 +130,21 @@ void AudioOutput::init(sendspin::PlayerRole& player, AssistClient* assist) {
     ESP_ERROR_CHECK(xTaskCreate(microphone_task, "mic_level", microphone_stack, this, 4, nullptr) == pdPASS
                     ? ESP_OK : ESP_ERR_NO_MEM);
 #endif
+}
+
+void AudioOutput::on_volume_changed(uint8_t volume) {
+    const uint8_t previous = volume_.exchange(volume);
+    if (previous != volume && xTimerReset(volume_save_timer_, 0) != pdPASS)
+        ESP_LOGE(TAG, "Failed to schedule player volume persistence");
+}
+
+void AudioOutput::save_volume_timer_cb(TimerHandle_t timer) {
+    auto* self = static_cast<AudioOutput*>(pvTimerGetTimerID(timer));
+    const uint8_t volume = self->volume_.load();
+    esp_err_t err = nvs_set_u8(self->volume_nvs_, "volume", volume);
+    if (err == ESP_OK) err = nvs_commit(self->volume_nvs_);
+    if (err != ESP_OK)
+        ESP_LOGE(TAG, "Failed to persist player volume: %s", esp_err_to_name(err));
 }
 
 bool AudioOutput::sent(i2s_chan_handle_t, i2s_event_data_t* event, void* context) {
@@ -235,8 +262,9 @@ void AudioOutput::update_led() {
     const uint8_t treble_peak = playing ? music_treble : mic_treble;
     bass_level_ = std::max<uint8_t>(bass_level_ > 12 ? bass_level_ - bass_level_ / 4 : 0, bass_peak);
     treble_level_ = std::max<uint8_t>(treble_level_ > 12 ? treble_level_ - treble_level_ / 8 : 0, treble_peak);
-    // Treble speeds up the colour glide; bass sets the brightness.
-    led_hue_ = (led_hue_ + 1 + treble_level_ / 24) % 768;
+    // Hold the hue when there is no new audio; treble speeds the glide while bass sets brightness.
+    if (bass_peak || treble_peak || peak)
+        led_hue_ = (led_hue_ + 1 + treble_level_ / 24) % 768;
     music_level_ = std::max(std::max(bass_level_, uint8_t(level / 2)), uint8_t(peak / 2));
     if (led_level_ && playing) {
         const uint8_t white = led_level_ * LED_MAX_BRIGHTNESS / 255;

@@ -6,6 +6,8 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/stream_buffer.h"
+#include "freertos/timers.h"
+#include "nvs.h"
 #include "sendspin/player_role.h"
 #include "driver/rmt_tx.h"
 
@@ -18,7 +20,7 @@ public:
     size_t on_audio_write(uint8_t* data, size_t length, uint32_t timeout_ms) override;
     void on_stream_start() override;
     void on_stream_end() override;
-    void on_volume_changed(uint8_t volume) override { volume_.store(volume); }
+    void on_volume_changed(uint8_t volume) override;
     void on_mute_changed(bool mute) override { muted_.store(mute); }
     // Direct reply playback (called from the TTS task): 48 kHz, stereo, 16-bit frames.
     // Mixed over music when Sendspin is streaming; otherwise written straight to I2S.
@@ -40,7 +42,9 @@ private:
     static constexpr size_t DMA_FRAMES = 240;
     static constexpr size_t CHANNELS = 2;
     static constexpr int LED_MAX_BRIGHTNESS = 90;
+    static constexpr TickType_t VOLUME_SAVE_DELAY = pdMS_TO_TICKS(1000);
     static bool sent(i2s_chan_handle_t, i2s_event_data_t*, void*);
+    static void save_volume_timer_cb(TimerHandle_t timer);
     void update_led();
     void set_led(uint8_t r, uint8_t g, uint8_t b);
     rmt_channel_handle_t led_chan_{nullptr};
@@ -79,8 +83,10 @@ private:
     int64_t led_next_us_{0};
     AssistClient* assist_{nullptr};
     sendspin::PlayerRole* player_{nullptr};
+    nvs_handle_t volume_nvs_{};
+    TimerHandle_t volume_save_timer_{nullptr};
     i2s_chan_handle_t tx_{nullptr};
-    std::atomic<uint8_t> volume_{35};
+    std::atomic<uint8_t> volume_{0};
     std::atomic<bool> muted_{false};
     std::atomic<bool> active_{false};
     portMUX_TYPE progress_lock_ = portMUX_INITIALIZER_UNLOCKED;

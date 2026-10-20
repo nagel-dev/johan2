@@ -14,10 +14,6 @@ menu "Johan2 Player Configuration"
         help
             Optional ws://HOST:8928/sendspin URL. Normally Music Assistant
             discovers this player through mDNS and connects to it.
-    config JOHAN2_INITIAL_VOLUME
-        int "Initial volume (percent)"
-        range 0 100
-        default 35
     config JOHAN2_I2S_BCLK
         int "PCM5102A BCLK GPIO"
         range 0 48
