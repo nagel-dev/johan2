@@ -69,6 +69,13 @@ menu "Johan2 Player Configuration"
         int "Direct reply volume (percent)"
         range 0 100
         default 70
+    config JOHAN2_WAKE_VAD
+        bool "Gate idle wake-word audio with local WebRTC speech detection"
+        default y
+        help
+            Retain 500 ms of audio locally, send it when speech starts, and keep
+            sending for one second after speech. Commands, follow-ups and the
+            stop listener remain continuous. Disable to restore full streaming.
     config JOHAN2_HOMEDASH_SYNC
         bool "Synchronize Assist state and remote wake via Home Assistant"
         default n

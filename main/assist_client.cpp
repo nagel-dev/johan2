@@ -154,6 +154,12 @@ void AssistClient::cancel_command(bool stop_playback) {
 }
 
 void AssistClient::reset_audio() {
+#if CONFIG_JOHAN2_WAKE_VAD
+    if (wake_gating_ && wake_gate_.seen_frames)
+        ESP_LOGI(TAG, "Wake VAD: sent %" PRIu32 "/%" PRIu32 " frames", wake_gate_.sent_frames, wake_gate_.seen_frames);
+    wake_gate_reset(&wake_gate_);
+    wake_gating_ = false;
+#endif
     accepting_.store(false);
     command_active_.store(false);
     xQueueReset(audio_queue_);
@@ -201,7 +207,30 @@ static void send_to_homedash(const char* path, const std::string& text) {
 
 void AssistClient::task(void* context) { static_cast<AssistClient*>(context)->run(); }
 
+bool AssistClient::send_audio(const int16_t* samples, size_t count) {
+    uint8_t packet[1 + SAMPLES * 2];
+    packet[0] = protocol_.active_handler();
+    for (size_t i = 0; i < count; ++i) {
+        const uint16_t sample = static_cast<uint16_t>(samples[i]);
+        packet[1 + i * 2] = sample & 0xff;
+        packet[2 + i * 2] = sample >> 8;
+    }
+    const int length = 1 + count * 2;
+    return esp_websocket_client_send_bin(socket_, reinterpret_cast<char*>(packet), length,
+                                          pdMS_TO_TICKS(100)) == length;
+}
+
+#if CONFIG_JOHAN2_WAKE_VAD
+static bool wake_speech(void* context, int16_t* frame) {
+    return vad_process(static_cast<vad_handle_t>(context), frame, 16000, 10) == VAD_SPEECH;
+}
+#endif
+
 void AssistClient::run() {
+#if CONFIG_JOHAN2_WAKE_VAD
+    wake_vad_ = vad_create(VAD_MODE_0);
+    if (!wake_vad_) ESP_LOGW(TAG, "Wake VAD unavailable; streaming continuously");
+#endif
     ESP_ERROR_CHECK(esp_websocket_client_start(socket_));
     while (true) {
         const bool failed = transport_failed_.exchange(false);
@@ -388,6 +417,10 @@ void AssistClient::run() {
                 }
                 const bool streaming = protocol_.any_streaming();
                 if (!was_streaming && streaming) {
+#if CONFIG_JOHAN2_WAKE_VAD
+                    wake_gate_reset(&wake_gate_);
+                    wake_gating_ = false;
+#endif
                     xQueueReset(audio_queue_);
                     accepting_.store(true);
                 } else if (was_streaming && !streaming) {
@@ -475,16 +508,27 @@ void AssistClient::run() {
         for (int n = 0; n < 4 && accepting_.load() && xQueueReceive(audio_queue_, &block, 0) == pdTRUE; ++n) {
             // Keep the wake word's own tail out of STT, where VAD would take it for the command.
             if (esp_timer_get_time() < wake_tail_until_) continue;
-            uint8_t packet[1 + SAMPLES * 2];
-            packet[0] = protocol_.active_handler();
-            for (size_t i = 0; i < block.count; ++i) {
-                const uint16_t sample = static_cast<uint16_t>(block.samples[i]);
-                packet[1 + i * 2] = sample & 0xff;
-                packet[2 + i * 2] = sample >> 8;
+#if CONFIG_JOHAN2_WAKE_VAD
+            if (wake_vad_ && protocol_.gate_wake_audio()) {
+                wake_gating_ = true;
+                if (!wake_gate_feed(&wake_gate_, block.samples, block.count, wake_speech, wake_vad_)) {
+                    transport_failed_.store(true);
+                    break;
+                }
+                Audio gated{};
+                while ((gated.count = wake_gate_take(&wake_gate_, gated.samples, SAMPLES)) != 0) {
+                    if (!send_audio(gated.samples, gated.count)) { transport_failed_.store(true); break; }
+                }
+                if (transport_failed_.load()) break;
+                continue;
             }
-            const int length = 1 + block.count * 2;
-            if (esp_websocket_client_send_bin(socket_, reinterpret_cast<char*>(packet), length,
-                                              pdMS_TO_TICKS(100)) != length) {
+            if (wake_gating_) {
+                ESP_LOGI(TAG, "Wake VAD: sent %" PRIu32 "/%" PRIu32 " frames", wake_gate_.sent_frames, wake_gate_.seen_frames);
+                wake_gate_reset(&wake_gate_);
+                wake_gating_ = false;
+            }
+#endif
+            if (!send_audio(block.samples, block.count)) {
                 transport_failed_.store(true);
                 break;
             }

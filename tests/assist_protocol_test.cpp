@@ -16,16 +16,22 @@ int main() {
     assert(command["input"]["sample_rate"] == 16000);
     assert(command["input"]["auto_gain_dbfs"] == 0);
     assert(p.running && !p.streaming);
+    assert(!p.gate_wake_audio());
     p.receive(R"({"id":99,"type":"event","event":{"type":"run-start","data":{"runner_data":{"stt_binary_handler_id":8}}}})");
     assert(!p.streaming); // Stale/unrelated runs must not change the audio routing.
     p.receive(R"({"id":1,"type":"event","event":{"type":"run-start","data":{"runner_data":{"stt_binary_handler_id":7}}}})");
     assert(p.streaming && p.handler == 7);
+    assert(p.gate_wake_audio());
+    p.stop_streaming = true;
+    assert(!p.gate_wake_audio()); // Stop capture must never be speech-gated.
+    p.stop_streaming = false;
     assert(p.receive(R"({"id":1,"type":"result","success":true})") == Event::None);
     assert(p.streaming);
     p.receive(R"({"id":1,"type":"event","event":{"type":"wake_word-end","data":{}}})");
     assert(!p.command_active); // Silence timeout is not a wake word.
     assert(p.receive(R"({"id":1,"type":"event","event":{"type":"wake_word-end","data":{"wake_word_output":{"wake_word_id":"hey_jarvis"}}}})") == Event::Wake);
     assert(p.command_active);
+    assert(!p.gate_wake_audio());
     assert(p.receive(R"({"id":1,"type":"event","event":{"type":"stt-end","data":{"stt_output":{"text":"turn on the light"}}}})") == Event::Transcript);
     assert(p.transcript() == "turn on the light");
     p.receive(R"({"id":1,"type":"event","event":{"type":"stt-end"}})");

@@ -1,5 +1,8 @@
 # Changes
 
+## 2026-10-20 (wake-word speech gate)
+- **Feature** `main/wake_audio_gate.h`, `main/assist_client.cpp/.h`, `main/assist_protocol.h`, `main/Kconfig.projbuild` — while idle and waiting for the wake word, microphone audio is gated by the local WebRTC VAD (`CONFIG_JOHAN2_WAKE_VAD`, default on): 500 ms pre-roll is sent when speech starts and audio keeps flowing for 1 s after it. Commands, follow-ups and the stop listener stay continuous. The gate lives in the Assist task, not the ISR. Validation: `tests/wake_audio_gate_test.c` and the Assist protocol host tests pass; `./scripts/idf.sh build` passes. Flashed (hash verified); wake word confirmed working by hand, bandwidth savings not measured.
+
 ## 2026-10-20 (LED band split)
 - **Change** `main/audio_output.cpp/.h` — when nothing is playing, the LED is steered by the microphone with the same band split (bass = brightness, treble = colour glide, gated by the noise threshold) instead of the white flash. While playing, the music path and white mic flash are unchanged. Built and flashed; tuning by ear pending.
 - **Change** `main/audio_output.cpp/.h` — the music LED now splits the played audio with two one-pole filters: bass drives brightness (fast attack, 25 % decay per 25 ms), treble speeds up the continuous hue glide. The old 1/3-wheel hue jump on each beat is gone; overall level adds a half-brightness floor. Built and flashed; tuning by eye/ear pending.

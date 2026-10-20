@@ -1,4 +1,9 @@
 #pragma once
+#include "sdkconfig.h"
+#if CONFIG_JOHAN2_WAKE_VAD
+#include "wake_audio_gate.h"
+#include "esp_vad.h"
+#endif
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -25,6 +30,7 @@ private:
     static void event(void* context, esp_event_base_t, int32_t id, void* data);
     void run();
     bool send_text(const std::string& text);
+    bool send_audio(const int16_t* samples, size_t count);
     void reset_audio();
     void forward_to_player();
     void cancel_command(bool stop_playback);
@@ -38,6 +44,11 @@ private:
     std::atomic<bool> accepting_{false};
     std::atomic<bool> command_active_{false};
     std::atomic<bool> transport_failed_{false};
+#if CONFIG_JOHAN2_WAKE_VAD
+    wake_audio_gate_t wake_gate_{}; // Owned by the Assist task, never the microphone/ISR.
+    vad_handle_t wake_vad_{nullptr};
+    bool wake_gating_{false};
+#endif
     std::string received_; // Only the WebSocket event task touches this buffer.
     bool receiving_{false};
     int64_t retry_at_{0};

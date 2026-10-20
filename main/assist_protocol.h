@@ -24,8 +24,10 @@ public:
     uint8_t stop_handler = 0;
     bool any_streaming() const { return streaming || stop_streaming; }
     uint8_t active_handler() const { return stop_streaming ? stop_handler : handler; }
+    bool gate_wake_audio() const { return streaming && awaiting_wake_ && !stop_streaming; }
 
     void reset() {
+        awaiting_wake_ = false;
         authenticated = running = streaming = command_active = false;
         unclear = speech_started = continue_conversation = false;
         transcript_.clear();
@@ -43,6 +45,7 @@ public:
         response_mime_.clear();
     }
     std::string begin(const char* pipeline, bool speak = false, const char* conversation_id = nullptr, bool skip_wake = false) {
+        awaiting_wake_ = !skip_wake;
         JsonDocument doc;
         doc["id"] = run_id = ++next_id_;
         doc["type"] = "assist_pipeline/run";
@@ -241,9 +244,11 @@ public:
         } else if (event == "wake_word-end") {
             if (!doc["event"]["data"]["wake_word_output"]["wake_word_id"].isNull()) {
                 command_active = true;
+                awaiting_wake_ = false;
                 return Event::Wake;
             }
         } else if (event == "stt-start") {
+            awaiting_wake_ = false;
             command_active = true;
             return Event::Listening;
         } else if (event == "stt-vad-start") {
@@ -324,6 +329,7 @@ public:
         return result;
     }
 private:
+    bool awaiting_wake_ = false;
     static std::string resolve_media(const std::string& source, const char* websocket_url, bool allow_media_source) {
         if (source.empty()) return {};
         std::string media = source;
