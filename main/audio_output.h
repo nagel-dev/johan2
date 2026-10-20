@@ -45,6 +45,8 @@ private:
     void set_led(uint8_t r, uint8_t g, uint8_t b);
     rmt_channel_handle_t led_chan_{nullptr};
     rmt_encoder_handle_t led_enc_{nullptr};
+    static void led_mirror_task(void* context);
+    std::atomic<uint32_t> led_mirror_color_{0}; // full-brightness colour for HomeDash
     uint32_t led_last_color_{0};
     bool led_color_valid_{false};
     std::atomic<uint8_t> peak_{0};
@@ -52,6 +54,16 @@ private:
     std::atomic<uint8_t> music_peak_{0};
     uint8_t music_level_{0};
     uint16_t led_hue_{0};
+    // Band split of the source audio: bass drives LED brightness, treble drives colour speed.
+    std::atomic<uint8_t> bass_peak_{0};
+    std::atomic<uint8_t> treble_peak_{0};
+    // Same band split of the microphone; steers the LED while nothing is playing.
+    std::atomic<uint8_t> mic_bass_peak_{0};
+    std::atomic<uint8_t> mic_treble_peak_{0};
+    int32_t lp_slow_{0};
+    int32_t lp_fast_{0};
+    uint8_t bass_level_{0};
+    uint8_t treble_level_{0};
 #if CONFIG_JOHAN2_MIC_AEC
     struct ReferenceBlock { int64_t end_us; int16_t stereo[DMA_FRAMES * CHANNELS]; };
     struct MicrophoneBlock { int64_t end_us; uint32_t sequence; int32_t raw[256]; };

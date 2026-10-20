@@ -82,6 +82,13 @@ menu "Johan2 Player Configuration"
         help
             Example: http://bakkieplus:8767/transcript. The HomeDash proxy shows
             the recognised text on its wall display.
+    config JOHAN2_HOMEDASH_LIGHT_PORT
+        int "HomeDash proxy UDP port for the LED colour mirror (0 disables)"
+        range 0 65535
+        default 8768
+        help
+            Johan2 sends its RGB LED colour here about ten times a second. The
+            host is taken from the HomeDash proxy URL above.
     config JOHAN2_MIC_GAIN
         int "Microphone PCM gain for Assist"
         range 1 32

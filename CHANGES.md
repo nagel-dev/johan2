@@ -1,7 +1,12 @@
 # Changes
 
+## 2026-10-20 (LED band split)
+- **Change** `main/audio_output.cpp/.h` — when nothing is playing, the LED is steered by the microphone with the same band split (bass = brightness, treble = colour glide, gated by the noise threshold) instead of the white flash. While playing, the music path and white mic flash are unchanged. Built and flashed; tuning by ear pending.
+- **Change** `main/audio_output.cpp/.h` — the music LED now splits the played audio with two one-pole filters: bass drives brightness (fast attack, 25 % decay per 25 ms), treble speeds up the continuous hue glide. The old 1/3-wheel hue jump on each beat is gone; overall level adds a half-brightness floor. Built and flashed; tuning by eye/ear pending.
+
 ## 2026-10-19 (reply fallback state)
 
+- **Feature** `main/audio_output.cpp/.h`, `main/Kconfig.projbuild` — a low-priority task sends the LED colour (scaled to full brightness) as a 3-byte UDP datagram to the HomeDash proxy host, port `CONFIG_JOHAN2_HOMEDASH_LIGHT_PORT` (8768, 0 disables), at up to 40 Hz (20 ms poll, so every 25 ms LED step is seen) with a 2 s repeat, so that HomeDash can mirror the LED. Built and flashed; not yet checked on the display.
 - **Fix** `main/assist_client.cpp` — drop `intent-progress` websocket messages in the callback and enlarge the message queue from 12 to 32, and log why a websocket message is dropped. Serial logs showed a full queue ("WS message queue full") during LLM streaming, which forced an Assist restart and the HomeDash "Failed - try again". Flashed; not yet confirmed on hardware over several questions.
 - **Feature** `main/assist_client.cpp`, `main/assist_protocol.h` — Johan2 posts the spoken reply text to the HomeDash proxy (`/response`, derived from `CONFIG_JOHAN2_HOMEDASH_TRANSCRIPT_URL`) when the reply audio is ready, so HomeDash can show it. Built and flashed; not yet verified on the display.
 - **Fix** `main/assist_client.cpp` — when the direct reply fetch fails and the reply player takes over, Johan2 reports `speaking` instead of `error`, so HomeDash no longer shows "Failed - try again" while the reply is still coming. Flashed; not physically retested.

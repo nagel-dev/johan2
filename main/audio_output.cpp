@@ -15,6 +15,9 @@
 #include <cstring>
 #include "esp_log.h"
 #include "esp_timer.h"
+#include <string>
+#include "lwip/netdb.h"
+#include "lwip/sockets.h"
 
 static const char* TAG = "audio";
 static_assert(CONFIG_JOHAN2_I2S_BCLK != CONFIG_JOHAN2_I2S_LRCK &&
@@ -39,6 +42,10 @@ void AudioOutput::init(sendspin::PlayerRole& player, AssistClient* assist) {
     if (rmt_new_tx_channel(&tx, &led_chan_) == ESP_OK && rmt_new_bytes_encoder(&enc, &led_enc_) == ESP_OK &&
         rmt_enable(led_chan_) == ESP_OK) {
         set_led(0, 0, 0);
+#if CONFIG_JOHAN2_HOMEDASH_LIGHT_PORT > 0
+        if (CONFIG_JOHAN2_HOMEDASH_TRANSCRIPT_URL[0])
+            xTaskCreate(led_mirror_task, "led_mirror", 4096, this, 2, nullptr);
+#endif
     } else {
         led_enc_ = nullptr;
         ESP_LOGW(TAG, "LED init failed");
@@ -158,6 +165,8 @@ void AudioOutput::set_led(uint8_t r, uint8_t g, uint8_t b) {
     // WS2812 retains its color: avoid periodic switching for unchanged values,
     // especially repeated black frames while listening in silence.
     const uint32_t color = (uint32_t(r) << 16) | (uint32_t(g) << 8) | b;
+    auto full = [](uint8_t v) { return uint32_t(std::min(255, v * 255 / LED_MAX_BRIGHTNESS)); };
+    led_mirror_color_.store((full(r) << 16) | (full(g) << 8) | full(b));
     if (led_color_valid_ && color == led_last_color_) return;
     const uint8_t grb[3] = {g, r, b};
     rmt_transmit_config_t cfg{};
@@ -166,6 +175,46 @@ void AudioOutput::set_led(uint8_t r, uint8_t g, uint8_t b) {
         ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_chan_, 100));
         led_last_color_ = color;
         led_color_valid_ = true;
+    }
+}
+
+// Mirrors the LED colour to the HomeDash proxy over UDP (up to 40 Hz, best effort).
+// The task owns DNS and the socket so the LED path never blocks on the network.
+void AudioOutput::led_mirror_task(void* context) {
+    auto& self = *static_cast<AudioOutput*>(context);
+    std::string host = CONFIG_JOHAN2_HOMEDASH_TRANSCRIPT_URL;
+    const auto scheme = host.find("://");
+    if (scheme != std::string::npos) host.erase(0, scheme + 3);
+    host.resize(host.find_first_of(":/") == std::string::npos ? host.size() : host.find_first_of(":/"));
+    int sock = -1;
+    sockaddr_in dest{};
+    uint32_t last = 0xFFFFFFFF;
+    int64_t resend_at = 0;
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        if (sock < 0) {
+            addrinfo hints{};
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_DGRAM;
+            addrinfo* result = nullptr;
+            if (getaddrinfo(host.c_str(), nullptr, &hints, &result) != 0 || !result) {
+                vTaskDelay(pdMS_TO_TICKS(10000));
+                continue;
+            }
+            dest = *reinterpret_cast<sockaddr_in*>(result->ai_addr);
+            freeaddrinfo(result);
+            dest.sin_port = htons(CONFIG_JOHAN2_HOMEDASH_LIGHT_PORT);
+            sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+            if (sock < 0) { vTaskDelay(pdMS_TO_TICKS(10000)); continue; }
+        }
+        const uint32_t color = self.led_mirror_color_.load();
+        const int64_t now = esp_timer_get_time();
+        // Repeat now and then so a HomeDash that connects later catches up.
+        if (color == last && now < resend_at) continue;
+        const uint8_t packet[3] = {uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color)};
+        sendto(sock, packet, sizeof(packet), 0, reinterpret_cast<sockaddr*>(&dest), sizeof(dest));
+        last = color;
+        resend_at = now + 2000000;
     }
 }
 
@@ -179,10 +228,17 @@ void AudioOutput::update_led() {
     const uint8_t source_peak = music_peak_.exchange(0);
     const uint8_t peak = active_.load() ? source_peak : 0;
     uint8_t level = music_level_ > 12 ? music_level_ - music_level_ / 4 : 0;
-    if (peak > level + 40) led_hue_ = (led_hue_ + 85) % 768;
-    else led_hue_ = (led_hue_ + 1) % 768;
-    music_level_ = std::max(level, peak);
-    if (led_level_) {
+    const bool playing = active_.load();
+    const uint8_t music_bass = bass_peak_.exchange(0), music_treble = treble_peak_.exchange(0);
+    const uint8_t mic_bass = mic_bass_peak_.exchange(0), mic_treble = mic_treble_peak_.exchange(0);
+    const uint8_t bass_peak = playing ? music_bass : mic_bass;
+    const uint8_t treble_peak = playing ? music_treble : mic_treble;
+    bass_level_ = std::max<uint8_t>(bass_level_ > 12 ? bass_level_ - bass_level_ / 4 : 0, bass_peak);
+    treble_level_ = std::max<uint8_t>(treble_level_ > 12 ? treble_level_ - treble_level_ / 8 : 0, treble_peak);
+    // Treble speeds up the colour glide; bass sets the brightness.
+    led_hue_ = (led_hue_ + 1 + treble_level_ / 24) % 768;
+    music_level_ = std::max(std::max(bass_level_, uint8_t(level / 2)), uint8_t(peak / 2));
+    if (led_level_ && playing) {
         const uint8_t white = led_level_ * LED_MAX_BRIGHTNESS / 255;
         set_led(white, white, white);
         return;
@@ -319,6 +375,22 @@ size_t AudioOutput::on_audio_write(uint8_t* data, size_t length, uint32_t timeou
         memcpy(&sample, data + i * 2, sizeof(sample));
         music_peak = std::max(music_peak, std::abs(static_cast<int>(sample)));
     }
+    // One-pole filters on the left channel: slow low-pass = bass, input minus fast low-pass = treble.
+    int bass_max = 0, treble_max = 0;
+    for (size_t i = 0; i + 1 < bytes / 2; i += CHANNELS) {
+        int16_t sample;
+        memcpy(&sample, data + i * 2, sizeof(sample));
+        lp_slow_ += (sample - lp_slow_) / 32;
+        lp_fast_ += (sample - lp_fast_) / 4;
+        bass_max = std::max<int>(bass_max, std::abs(lp_slow_));
+        treble_max = std::max<int>(treble_max, std::abs(sample - lp_fast_));
+    }
+    const auto bass_level = static_cast<uint8_t>(std::min(255, bass_max / 64));
+    const auto treble_level = static_cast<uint8_t>(std::min(255, treble_max / 24));
+    uint8_t bass_prev = bass_peak_.load();
+    while (bass_level > bass_prev && !bass_peak_.compare_exchange_weak(bass_prev, bass_level)) {}
+    uint8_t treble_prev = treble_peak_.load();
+    while (treble_level > treble_prev && !treble_peak_.compare_exchange_weak(treble_prev, treble_level)) {}
     const auto music_level = static_cast<uint8_t>(std::min(255, music_peak / 96));
     uint8_t previous = music_peak_.load();
     while (music_level > previous && !music_peak_.compare_exchange_weak(previous, music_level)) {}
@@ -355,6 +427,7 @@ void AudioOutput::microphone_task(void* context) {
 #endif
     // Learn ambient noise for about one second; keep quiet during startup.
     double noise = 0;
+    double led_lp_slow = 0, led_lp_fast = 0;
     size_t calibration_samples = 0;
     unsigned calibration_blocks = 0;
     while (true) {
@@ -458,5 +531,21 @@ void AudioOutput::microphone_task(void* context) {
             (rms - threshold) * 255.0 / std::max(8000.0, threshold * 2.0), 0.0, 255.0));
         uint8_t previous = self.peak_.load();
         while (level > previous && !self.peak_.compare_exchange_weak(previous, level)) {}
+        // Band split for the idle LED: same filters as the music path, gated by the noise threshold.
+        double bass_max = 0, treble_max = 0;
+        for (size_t i = 0; i < count; ++i) {
+            const double sample = samples[i] / 256 - mean;
+            led_lp_slow += (sample - led_lp_slow) / 32;
+            led_lp_fast += (sample - led_lp_fast) / 4;
+            bass_max = std::max(bass_max, std::abs(led_lp_slow));
+            treble_max = std::max(treble_max, std::abs(sample - led_lp_fast));
+        }
+        const double range = std::max(8000.0, threshold * 2.0);
+        const auto bass_level = static_cast<uint8_t>(std::clamp((bass_max - threshold / 2) * 255.0 / range, 0.0, 255.0));
+        const auto treble_level = static_cast<uint8_t>(std::clamp((treble_max * 2 - threshold / 2) * 255.0 / range, 0.0, 255.0));
+        uint8_t bass_prev = self.mic_bass_peak_.load();
+        while (bass_level > bass_prev && !self.mic_bass_peak_.compare_exchange_weak(bass_prev, bass_level)) {}
+        uint8_t treble_prev = self.mic_treble_peak_.load();
+        while (treble_level > treble_prev && !self.mic_treble_peak_.compare_exchange_weak(treble_prev, treble_level)) {}
     }
 }
