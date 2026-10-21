@@ -516,6 +516,13 @@ logs; the user confirmed that the revised flow works well.
 
 ### Shared voice ownership and HomeDash takeover
 
+For a physical remote, bind On to `script.voice_assist_start` and Off to
+`script.voice_assist_cancel` from `ha/johan2_assist.yaml`. These scripts route
+directly to Johan2 while `input_select.voice_device` selects it, so HomeDash can
+be powered off. When HA selects HomeDash after Johan2 goes offline, the same
+buttons use HomeDash instead. Requests during the two-second microphone handover
+wait up to ten seconds for a selected device; they stop if no device is selected.
+
 With `JOHAN2_HOMEDASH_SYNC` enabled, install both `ha/johan2_assist.yaml`
 and HomeDash's `ha/packages/voice_failover.yaml` before flashing this version.
 The latter owns `input_select.voice_device`, the five-second heartbeat helpers,

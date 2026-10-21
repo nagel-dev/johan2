@@ -22,6 +22,29 @@ input_select:
     initial: offline
 
 script:
+  voice_assist_start:
+    alias: Voice - start listening on active device
+    description: Start Johan2 directly, or HomeDash when it owns voice after failover.
+    mode: single
+    sequence:
+      # The failover automation briefly selects none while changing microphones.
+      - wait_template: "{{ states('input_select.voice_device') in ['johan2', 'homedash'] }}"
+        timeout: '00:00:10'
+        continue_on_timeout: false
+      - service: >-
+          {{ 'script.johan2_assist_start' if is_state('input_select.voice_device', 'johan2')
+             else 'script.homedash_assist' }}
+  voice_assist_cancel:
+    alias: Voice - cancel listening on active device
+    description: Cancel Assist on the selected voice device without a HomeDash relay for Johan2.
+    mode: single
+    sequence:
+      - wait_template: "{{ states('input_select.voice_device') in ['johan2', 'homedash'] }}"
+        timeout: '00:00:10'
+        continue_on_timeout: false
+      - service: >-
+          {{ 'script.johan2_assist_cancel' if is_state('input_select.voice_device', 'johan2')
+             else 'script.homedash_assist_cancel' }}
   johan2_assist_start:
     alias: Johan2 - start listening
     description: Start a command using Johan2 microphone without a spoken wake word.

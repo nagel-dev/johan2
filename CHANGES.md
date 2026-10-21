@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-10-21
+- **User validation** User confirms the updated remote routing works. The precise power-off scenarios and playback checks were not specified.
+- **Fix** `ha/johan2_assist.yaml`, `README.md` — add `script.voice_assist_start/cancel` to route the physical remote through HA's active voice selection, calling Johan2 directly when selected and HomeDash after failover, so that HomeDash can be powered off while Johan2 is used and remains the fallback when Johan2 is off. Requests during microphone handover wait up to ten seconds for a selected device. Updated only the actions of the deployed `Assist button` and `Assist cancel button` automations, with backups in `/root/assist-remote-backup-20261021-0pb_u09v` on HA. HA's full configuration check passed; restarted HA and verified both loaded scripts, triggered both remote automations, observed Johan2's start/cancel helper timestamps advance, and confirmed return to idle. Physical remote radio input, powered-off HomeDash operation, and powered-off Johan2 fallback/playback remain unverified; no firmware change or flash was needed.
+
 ## 2026-10-20 (volume persistence)
 - **Fix** `main/audio_output.cpp/.h`, `main/main.cpp`, `main/Kconfig.projbuild` — restore the last Sendspin music volume from NVS instead of resetting it to 35% on every boot; when no saved volume exists, start muted. Save changes after one second of inactivity to avoid flash writes for every slider step.
 
