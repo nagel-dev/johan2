@@ -108,6 +108,10 @@ Assistant may show a new player entry. No flash erase is needed.
   Sendspin synchronization from task context, never directly from the ISR.
 - `main/main.cpp`: Sendspin player role, mDNS advertisement, NVS persistence,
   and optional outgoing server connection.
+- Music lighting keeps the flowing colours, with short bass-attack pulses,
+  sustained midrange colour and pale treble highlights from both stereo channels.
+  Microphone activity blends a little white into the music colours. HomeDash
+  receives the same effect through the existing RGB mirror connection.
 - Initial volume is 35%; Music Assistant can change it. It is independent of
   the Arduino library's 0–21 scale.
 - Only FLAC and PCM at 48 kHz, stereo, 16-bit are advertised. Music Assistant

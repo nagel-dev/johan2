@@ -10,6 +10,7 @@
 #include "nvs.h"
 #include "sendspin/player_role.h"
 #include "driver/rmt_tx.h"
+#include "music_light.h"
 
 class AssistClient;
 
@@ -58,14 +59,15 @@ private:
     std::atomic<uint8_t> music_peak_{0};
     uint8_t music_level_{0};
     uint16_t led_hue_{0};
-    // Band split of the source audio: bass drives LED brightness, treble drives colour speed.
+    // Source levels are published by the writer, consumed by the 40 Hz LED update.
     std::atomic<uint8_t> bass_peak_{0};
+    std::atomic<uint8_t> mid_peak_{0};
     std::atomic<uint8_t> treble_peak_{0};
+    MusicBandMeter music_bands_; // Audio writer only.
+    MusicLight music_light_; // Main loop only.
     // Same band split of the microphone; steers the LED while nothing is playing.
     std::atomic<uint8_t> mic_bass_peak_{0};
     std::atomic<uint8_t> mic_treble_peak_{0};
-    int32_t lp_slow_{0};
-    int32_t lp_fast_{0};
     uint8_t bass_level_{0};
     uint8_t treble_level_{0};
 #if CONFIG_JOHAN2_MIC_AEC

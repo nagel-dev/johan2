@@ -253,24 +253,29 @@ void AudioOutput::update_led() {
     const uint8_t mic_peak = peak_.exchange(0);
     led_level_ = std::max<int>(mic_peak, led_level_ > 4 ? led_level_ - std::max(1, led_level_ / 5) : 0);
     const uint8_t source_peak = music_peak_.exchange(0);
-    const uint8_t peak = active_.load() ? source_peak : 0;
-    uint8_t level = music_level_ > 12 ? music_level_ - music_level_ / 4 : 0;
     const bool playing = active_.load();
     const uint8_t music_bass = bass_peak_.exchange(0), music_treble = treble_peak_.exchange(0);
+    const uint8_t music_mid = mid_peak_.exchange(0);
     const uint8_t mic_bass = mic_bass_peak_.exchange(0), mic_treble = mic_treble_peak_.exchange(0);
-    const uint8_t bass_peak = playing ? music_bass : mic_bass;
-    const uint8_t treble_peak = playing ? music_treble : mic_treble;
+    if (playing) {
+        const auto color = music_light_.update({source_peak, music_bass, music_mid, music_treble});
+        // Mic activity adds a little white without obscuring the music colours.
+        auto channel = [this](uint8_t v) {
+            const int tinted = v + (255 - v) * led_level_ / (255 * 3);
+            return static_cast<uint8_t>(tinted * LED_MAX_BRIGHTNESS / 255);
+        };
+        set_led(channel(color.r), channel(color.g), channel(color.b));
+        return;
+    }
+    uint8_t level = music_level_ > 12 ? music_level_ - music_level_ / 4 : 0;
+    const uint8_t bass_peak = mic_bass;
+    const uint8_t treble_peak = mic_treble;
     bass_level_ = std::max<uint8_t>(bass_level_ > 12 ? bass_level_ - bass_level_ / 4 : 0, bass_peak);
     treble_level_ = std::max<uint8_t>(treble_level_ > 12 ? treble_level_ - treble_level_ / 8 : 0, treble_peak);
     // Hold the hue when there is no new audio; treble speeds the glide while bass sets brightness.
-    if (bass_peak || treble_peak || peak)
+    if (bass_peak || treble_peak)
         led_hue_ = (led_hue_ + 1 + treble_level_ / 24) % 768;
-    music_level_ = std::max(std::max(bass_level_, uint8_t(level / 2)), uint8_t(peak / 2));
-    if (led_level_ && playing) {
-        const uint8_t white = led_level_ * LED_MAX_BRIGHTNESS / 255;
-        set_led(white, white, white);
-        return;
-    }
+    music_level_ = std::max(bass_level_, uint8_t(level / 2));
     const int v = music_level_ * LED_MAX_BRIGHTNESS / 255;
     const int step = led_hue_ % 256;
     switch (led_hue_ / 256) {
@@ -396,34 +401,23 @@ size_t AudioOutput::on_audio_write(uint8_t* data, size_t length, uint32_t timeou
             scratch_[i] = static_cast<int16_t>(std::clamp<int32_t>(
                 static_cast<int32_t>(scratch_[i]) + mix_scratch_[i], -32768, 32767));
     }
-    // Preserve the original source-level music effect, independent of playback volume.
-    int music_peak = 0;
-    for (size_t i = 0; i < bytes / 2; ++i) {
-        int16_t sample;
-        memcpy(&sample, data + i * 2, sizeof(sample));
-        music_peak = std::max(music_peak, std::abs(static_cast<int>(sample)));
-    }
-    // One-pole filters on the left channel: slow low-pass = bass, input minus fast low-pass = treble.
-    int bass_max = 0, treble_max = 0;
-    for (size_t i = 0; i + 1 < bytes / 2; i += CHANNELS) {
-        int16_t sample;
-        memcpy(&sample, data + i * 2, sizeof(sample));
-        lp_slow_ += (sample - lp_slow_) / 32;
-        lp_fast_ += (sample - lp_fast_) / 4;
-        bass_max = std::max<int>(bass_max, std::abs(lp_slow_));
-        treble_max = std::max<int>(treble_max, std::abs(sample - lp_fast_));
-    }
-    const auto bass_level = static_cast<uint8_t>(std::min(255, bass_max / 64));
-    const auto treble_level = static_cast<uint8_t>(std::min(255, treble_max / 24));
+    size_t written = 0;
+    const esp_err_t err = i2s_channel_write(tx_, scratch_, bytes, &written, timeout_ms);
+    // Analyze only accepted source frames, once, including partial-write retries.
+    // Volume/mute still do not change the music display. One stereo pass collects
+    // all four levels instead of separate peak and left-channel band passes.
+    const auto levels = music_bands_.analyze(data, written);
+    const auto bass_level = levels.bass;
+    const auto treble_level = levels.treble;
     uint8_t bass_prev = bass_peak_.load();
     while (bass_level > bass_prev && !bass_peak_.compare_exchange_weak(bass_prev, bass_level)) {}
     uint8_t treble_prev = treble_peak_.load();
     while (treble_level > treble_prev && !treble_peak_.compare_exchange_weak(treble_prev, treble_level)) {}
-    const auto music_level = static_cast<uint8_t>(std::min(255, music_peak / 96));
+    uint8_t mid_prev = mid_peak_.load();
+    while (levels.mid > mid_prev && !mid_peak_.compare_exchange_weak(mid_prev, levels.mid)) {}
+    const auto music_level = levels.level;
     uint8_t previous = music_peak_.load();
     while (music_level > previous && !music_peak_.compare_exchange_weak(previous, music_level)) {}
-    size_t written = 0;
-    const esp_err_t err = i2s_channel_write(tx_, scratch_, bytes, &written, timeout_ms);
     if (err != ESP_OK && err != ESP_ERR_TIMEOUT) ESP_LOGW(TAG, "I2S: %s", esp_err_to_name(err));
     return written;
 }
