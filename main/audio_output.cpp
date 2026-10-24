@@ -454,10 +454,14 @@ void AudioOutput::microphone_task(void* context) {
     static MicDenoise denoiser(true, CONFIG_JOHAN2_MIC_HIGHPASS_HZ);
 #endif
     // Learn ambient noise for about one second; keep quiet during startup.
-    double noise = 0;
-    double led_lp_slow = 0, led_lp_fast = 0;
+    // ESP32-S3 has a single-precision FPU; per-sample double arithmetic is
+    // software-emulated and competes with AEC/decoding on the audio core.
+    float noise = 0;
+    float led_lp_slow = 0, led_lp_fast = 0;
     size_t calibration_samples = 0;
     unsigned calibration_blocks = 0;
+    uint32_t max_block_us = 0, over_budget_blocks = 0;
+    int64_t next_stats_us = 0;
     while (true) {
         size_t bytes = 0;
         int64_t processing_started_wait = 0;
@@ -520,7 +524,8 @@ void AudioOutput::microphone_task(void* context) {
 #endif
             pcm[i] = MicPcm::quantize(filtered, CONFIG_JOHAN2_MIC_GAIN);
         }
-        uint32_t processing_us = esp_timer_get_time() - processing_started;
+        const int64_t dsp_finished = esp_timer_get_time();
+        uint32_t processing_us = dsp_finished - processing_started;
 #if CONFIG_JOHAN2_MIC_AEC
         processing_us += aec_processing_us;
         aec_processing_us = 0;
@@ -537,14 +542,19 @@ void AudioOutput::microphone_task(void* context) {
         }
         // INMP441 supplies signed 24-bit samples in the high bits of each 32-bit slot.
         // Remove DC before measuring RMS, so a static offset cannot light the LED.
-        double sum = 0, squares = 0;
+        int64_t sum = 0;
         for (size_t i = 0; i < count; ++i) {
-            const double sample = samples[i] / 256;
-            sum += sample;
-            squares += sample * sample;
+            sum += samples[i] / 256;
         }
-        const double mean = sum / count;
-        const double rms = std::sqrt(std::max(0.0, squares / count - mean * mean));
+        const float mean = static_cast<float>(sum) / count;
+        // Center first: E[x*x] - E[x]*E[x] loses precision in float when the
+        // microphone has a large DC offset and little actual sound.
+        float squares = 0;
+        for (size_t i = 0; i < count; ++i) {
+            const float centered = samples[i] / 256 - mean;
+            squares += centered * centered;
+        }
+        const float rms = std::sqrt(squares / count);
         if (calibration_samples < 16000) {
             noise += rms;
             ++calibration_blocks;
@@ -552,28 +562,46 @@ void AudioOutput::microphone_task(void* context) {
             if (calibration_samples >= 16000) noise /= calibration_blocks;
             continue;
         }
-        const double threshold = std::max(500.0, noise * 3.0);
+        const float threshold = std::max(500.0f, noise * 3.0f);
         // Follow slow ambient changes without immediately absorbing speech/claps.
-        noise += (rms < threshold ? 0.01 : 0.0001) * (rms - noise);
+        noise += (rms < threshold ? 0.01f : 0.0001f) * (rms - noise);
         const auto level = static_cast<uint8_t>(std::clamp(
-            (rms - threshold) * 255.0 / std::max(8000.0, threshold * 2.0), 0.0, 255.0));
+            (rms - threshold) * 255.0f / std::max(8000.0f, threshold * 2.0f), 0.0f, 255.0f));
         uint8_t previous = self.peak_.load();
         while (level > previous && !self.peak_.compare_exchange_weak(previous, level)) {}
         // Band split for the idle LED: same filters as the music path, gated by the noise threshold.
-        double bass_max = 0, treble_max = 0;
-        for (size_t i = 0; i < count; ++i) {
-            const double sample = samples[i] / 256 - mean;
-            led_lp_slow += (sample - led_lp_slow) / 32;
-            led_lp_fast += (sample - led_lp_fast) / 4;
-            bass_max = std::max(bass_max, std::abs(led_lp_slow));
-            treble_max = std::max(treble_max, std::abs(sample - led_lp_fast));
+        // Music supplies its own bands; keep only the white mic-activity meter
+        // above while streaming, rather than computing unused microphone bands.
+        if (!self.active_.load()) {
+            float bass_max = 0, treble_max = 0;
+            for (size_t i = 0; i < count; ++i) {
+                const float sample = samples[i] / 256 - mean;
+                led_lp_slow += (sample - led_lp_slow) / 32.0f;
+                led_lp_fast += (sample - led_lp_fast) / 4.0f;
+                bass_max = std::max(bass_max, std::abs(led_lp_slow));
+                treble_max = std::max(treble_max, std::abs(sample - led_lp_fast));
+            }
+            const float range = std::max(8000.0f, threshold * 2.0f);
+            const auto bass_level = static_cast<uint8_t>(std::clamp((bass_max - threshold / 2) * 255.0f / range, 0.0f, 255.0f));
+            const auto treble_level = static_cast<uint8_t>(std::clamp((treble_max * 2 - threshold / 2) * 255.0f / range, 0.0f, 255.0f));
+            uint8_t bass_prev = self.mic_bass_peak_.load();
+            while (bass_level > bass_prev && !self.mic_bass_peak_.compare_exchange_weak(bass_prev, bass_level)) {}
+            uint8_t treble_prev = self.mic_treble_peak_.load();
+            while (treble_level > treble_prev && !self.mic_treble_peak_.compare_exchange_weak(treble_prev, treble_level)) {}
         }
-        const double range = std::max(8000.0, threshold * 2.0);
-        const auto bass_level = static_cast<uint8_t>(std::clamp((bass_max - threshold / 2) * 255.0 / range, 0.0, 255.0));
-        const auto treble_level = static_cast<uint8_t>(std::clamp((treble_max * 2 - threshold / 2) * 255.0 / range, 0.0, 255.0));
-        uint8_t bass_prev = self.mic_bass_peak_.load();
-        while (bass_level > bass_prev && !self.mic_bass_peak_.compare_exchange_weak(bass_prev, bass_level)) {}
-        uint8_t treble_prev = self.mic_treble_peak_.load();
-        while (treble_level > treble_prev && !self.mic_treble_peak_.compare_exchange_weak(treble_prev, treble_level)) {}
+        // Existing WAV processing metrics stop before LED analysis. Measure the
+        // whole capture iteration too, including both AEC half-frames, so CPU
+        // overruns cannot hide behind apparently healthy DSP-only timings.
+        const uint32_t block_us = processing_us + (esp_timer_get_time() - dsp_finished);
+        max_block_us = std::max(max_block_us, block_us);
+        if (block_us > count * 1000000 / 16000) ++over_budget_blocks;
+        const int64_t stats_now = esp_timer_get_time();
+        if (stats_now >= next_stats_us) {
+            next_stats_us = stats_now + 10000000;
+            ESP_LOGI(TAG, "Mic workload: max_block_us=%lu; budget_us=%u; over_budget=%lu",
+                     static_cast<unsigned long>(max_block_us), unsigned(count * 1000000 / 16000),
+                     static_cast<unsigned long>(over_budget_blocks));
+            max_block_us = over_budget_blocks = 0;
+        }
     }
 }
