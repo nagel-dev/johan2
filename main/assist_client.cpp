@@ -425,7 +425,11 @@ void AssistClient::run() {
                              (long long)((esp_timer_get_time() - speech_at_) / 1000));
                     retry_at_ = esp_timer_get_time() + (success ? 1500000 : 10000000);
                     publish_state(success ? "idle" : "error");
-                } else if (result == AssistProtocol::Event::Error || result == AssistProtocol::Event::Finished) {
+                } else if (result == AssistProtocol::Event::Error || result == AssistProtocol::Event::Finished ||
+                           result == AssistProtocol::Event::Silent) {
+                    const bool failed = result == AssistProtocol::Event::Error;
+                    // The action already ran; skip the pipeline's remaining TTS of the empty reply.
+                    if (result == AssistProtocol::Event::Silent && !send_text(protocol_.cancel_run())) transport_failed_.store(true);
                     const bool was_followup = followup_;
                     followup_ = false;
                     followup_deadline_ = 0;
@@ -433,7 +437,7 @@ void AssistClient::run() {
                         ++followup_count_;
                         // Let the user repeat the command without the wake word.
                         followup_used_ = followup_ = remote_start_pending_ = true;
-                        reset_audio(result == AssistProtocol::Event::Finished);
+                        reset_audio(!failed);
                         retry_at_ = esp_timer_get_time() + 200000;
                         publish_state("starting");
                         ESP_LOGI(TAG, "%s; listening again without wake word",
@@ -441,14 +445,14 @@ void AssistClient::run() {
                     } else if (protocol_.unclear && was_followup) {
                         // No clear follow-up either: stay quiet and rearm the wake word.
                         if (!direct_playing_ && deferred_reply_.empty() && !protocol_.announcement_pending) publish_state("idle");
-                        reset_audio(result == AssistProtocol::Event::Finished);
+                        reset_audio(!failed);
                         retry_at_ = std::max(retry_at_, esp_timer_get_time() + 250000);
                     } else {
                         if (!direct_playing_ && deferred_reply_.empty() && !protocol_.announcement_pending)
-                            publish_state(result == AssistProtocol::Event::Error ? "error" : "idle");
-                        reset_audio(result == AssistProtocol::Event::Finished);
-                        retry_at_ = std::max(retry_at_, esp_timer_get_time() + (result == AssistProtocol::Event::Error ? 10000000 : 250000));
-                        if (result == AssistProtocol::Event::Error) ESP_LOGW(TAG, "Assist run failed: %s", protocol_.error_code().c_str());
+                            publish_state(failed ? "error" : "idle");
+                        reset_audio(!failed);
+                        retry_at_ = std::max(retry_at_, esp_timer_get_time() + (failed ? 10000000 : 250000));
+                        if (failed) ESP_LOGW(TAG, "Assist run failed: %s", protocol_.error_code().c_str());
                         if (!protocol_.unclear) followup_used_ = false;
                     }
                     if (was_command_capture) request_listening_cue(true);
@@ -467,7 +471,7 @@ void AssistClient::run() {
                 } else if (protocol_.stop_streaming && !transport_failed_.load()) {
                     accepting_.store(true); // reset_audio() above must not silence the stop listener
                 }
-                command_active_.store(protocol_.command_active);
+                command_active_.store(protocol_.music_muted);
             }
         }
         const int64_t now = esp_timer_get_time();

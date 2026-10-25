@@ -30,12 +30,14 @@ int main() {
     p.receive(R"({"id":1,"type":"event","event":{"type":"wake_word-end","data":{}}})");
     assert(!p.command_active); // Silence timeout is not a wake word.
     assert(p.receive(R"({"id":1,"type":"event","event":{"type":"wake_word-end","data":{"wake_word_output":{"wake_word_id":"hey_jarvis"}}}})") == Event::Wake);
-    assert(p.command_active);
+    assert(p.command_active && p.music_muted);
     assert(!p.gate_wake_audio());
+    p.receive(R"({"id":1,"type":"event","event":{"type":"stt-vad-end"}})");
+    assert(p.command_active && !p.music_muted); // Music resumes while the command is processed.
     assert(p.receive(R"({"id":1,"type":"event","event":{"type":"stt-end","data":{"stt_output":{"text":"turn on the light"}}}})") == Event::Transcript);
     assert(p.transcript() == "turn on the light");
     p.receive(R"({"id":1,"type":"event","event":{"type":"stt-end"}})");
-    assert(!p.streaming && p.command_active); // Keep music ducked until intent completes.
+    assert(!p.streaming && p.command_active && !p.music_muted); // Still cancellable; music keeps playing.
     assert(p.receive(R"({"id":1,"type":"event","event":{"type":"run-end"}})") == Event::Finished);
     assert(!p.running && !p.command_active);
     deserializeJson(command, p.begin(""));
@@ -182,7 +184,7 @@ int main() {
     assert(!unclear.unclear && !unclear.continue_conversation && !unclear.speech_started);
     AssistProtocol quiet;
     quiet.begin("", true, nullptr, true);
-    quiet.receive(R"({"id":1,"type":"event","event":{"type":"intent-end","data":{"intent_output":{"response":{"response_type":"error","data":{"code":"unknown"},"speech":{"plain":{"speech":"Unable to get response"}}}}}}})");
+    assert(quiet.receive(R"({"id":1,"type":"event","event":{"type":"intent-end","data":{"intent_output":{"response":{"response_type":"error","data":{"code":"unknown"},"speech":{"plain":{"speech":"Unable to get response"}}}}}}})") == Event::Silent);
     assert(quiet.silent && !quiet.unclear && !quiet.continue_conversation && quiet.reply_text().empty());
     assert(quiet.receive(R"({"id":1,"type":"event","event":{"type":"tts-end","data":{"tts_output":{"media_id":"media-source://tts/err","url":"/api/tts_proxy/err.wav"}}}})") == Event::None);
     assert(quiet.reply_url("ws://ha/api/websocket").empty() && quiet.receive(R"({"id":1,"type":"event","event":{"type":"run-end"}})") == Event::Finished);

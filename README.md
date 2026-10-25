@@ -178,9 +178,8 @@ adjusted if speech clips or is too quiet.
 
 Music retains the coloured LED effect, with white microphone activity as before.
 After wake-word detection or remote command activation, music is digitally muted
-while the command is active, including capture and processing. It is restored
-before the spoken reply, cancellation or completion without changing the player
-volume setting. During direct spoken replies, music remains at one fifth volume. Acoustic echo cancellation is optional and disabled by default; without it, loud
+while the command is being captured, until HA reports the end of speech. It
+returns during processing without changing the player volume setting. During direct spoken replies, music remains at one fifth volume. Acoustic echo cancellation is optional and disabled by default; without it, loud
 speaker audio can still impair wake-word detection. See the AEC test below. When `JOHAN2_HA_REPLY_PLAYER` is set, the pipeline
 continues through text-to-speech. Its generated audio is forwarded to that HA
 media player using `media_player.play_media` with `announce: true`; Music Assistant

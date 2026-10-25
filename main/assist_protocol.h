@@ -5,13 +5,14 @@
 // HA Assist wire state, kept independent of ESP-IDF so it can be tested on a host.
 class AssistProtocol {
 public:
-    enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, OwnerChanged, SyncError, WifiError, Transcript, SpeechReady, StopTranscript, PlaybackAccepted, PlaybackFailed, Finished, Error, AuthInvalid };
+    enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, OwnerChanged, SyncError, WifiError, Transcript, SpeechReady, StopTranscript, PlaybackAccepted, PlaybackFailed, Silent, Finished, Error, AuthInvalid };
     bool listening_cue_enabled = true; // Follows input_boolean.johan2_listening_cue; on until HA says off.
     bool owns_voice = false; // Fail closed until HA grants this device voice ownership.
     bool authenticated = false;
     bool running = false;
     bool streaming = false;
     bool command_active = false;
+    bool music_muted = false;    // only while the command is being spoken; processing leaves music playing
     bool unclear = false;        // STT heard nothing or the agent did not understand
     bool continue_conversation = false; // the agent asked a question and expects an answer
     bool speech_started = false; // HA reported voice activity in this run
@@ -30,7 +31,7 @@ public:
 
     void reset() {
         awaiting_wake_ = false;
-        authenticated = running = streaming = command_active = false;
+        authenticated = running = streaming = command_active = music_muted = false;
         unclear = speech_started = continue_conversation = silent = false;
         transcript_.clear();
         stop_running = stop_streaming = false;
@@ -70,7 +71,7 @@ public:
         reply_text_.clear();
         speech_forwarded_ = false;
         running = true;
-        streaming = command_active = false;
+        streaming = command_active = music_muted = false;
         std::string result;
         serializeJson(doc, result);
         return result;
@@ -268,13 +269,13 @@ public:
             streaming = true;
         } else if (event == "wake_word-end") {
             if (!doc["event"]["data"]["wake_word_output"]["wake_word_id"].isNull()) {
-                command_active = true;
+                command_active = music_muted = true;
                 awaiting_wake_ = false;
                 return Event::Wake;
             }
         } else if (event == "stt-start") {
             awaiting_wake_ = false;
-            command_active = true;
+            command_active = music_muted = true;
             return Event::Listening;
         } else if (event == "stt-vad-start") {
             speech_started = true;
@@ -290,23 +291,27 @@ public:
             reply_text_ = spoken;
             // HA's OpenAI agent reports a reply-less turn as this error; the action itself already ran.
             silent = kind == "error" && code == "unknown" && spoken == "Unable to get response";
-            if (silent) reply_text_.clear();
+            if (silent) {
+                reply_text_.clear();
+                return Event::Silent;
+            }
             if (kind == "error" && (code == "no_intent_match" || code == "no_valid_targets")) unclear = true;
         } else if (event == "stt-vad-end") {
+            music_muted = false;
             return Event::Processing;
         } else if (event == "stt-end") {
-            streaming = false;
+            streaming = music_muted = false;
             transcript_ = doc["event"]["data"]["stt_output"]["text"] | "";
             return transcript_.empty() ? Event::Processing : Event::Transcript;
         } else if (event == "tts-end" && silent) {
-            streaming = command_active = false;
+            streaming = command_active = music_muted = false;
         } else if (event == "tts-end" && !speech_forwarded_) {
             const auto output = doc["event"]["data"]["tts_output"];
             response_media_ = output["media_id"] | "";
             response_url_ = output["url"] | "";
             if (response_media_.empty()) response_media_ = response_url_;
             response_mime_ = output["mime_type"] | "music";
-            streaming = command_active = false;
+            streaming = command_active = music_muted = false;
             if (!response_media_.empty()) return Event::SpeechReady;
         } else if (event == "run-end") {
             finish();
@@ -396,5 +401,5 @@ private:
     int stop_id_ = 0;
     std::string error_code_;
     std::string response_mime_;
-    void finish() { running = streaming = command_active = false; }
+    void finish() { running = streaming = command_active = music_muted = false; }
 };
