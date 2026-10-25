@@ -1,5 +1,16 @@
 # Changes
 
+## 2026-10-25 (HomeDash post memory cleanup)
+
+- **Fix** `main/assist_client.cpp` — run HomeDash HTTP posting in a normally returning helper before the task deletes itself, so C++ destructors release the owned post, payload and URL on success, HTTP/client failures and malformed-URL exits. Keep the existing asynchronous posting and timeout behavior. Update the dependency audit to record the correction; physical heap stability and the cause of earlier slowdowns remain unverified.
+- **Validation** A temporary host harness compiling the actual posting functions passed 40,000 lifecycles across success, HTTP failure, initialization failure and malformed URL, asserting that allocations return to baseline before simulated task deletion; address/undefined-behaviour sanitizers passed. A negative control restoring the previous lifetime ordering fails that assertion. `./scripts/idf.sh build` passed with ESP-IDF 6.0.1 and whitespace checks passed. Not flashed; no physical heap soak or playback verification performed.
+- **Deployment** At the user's request, flashed the built firmware through `./scripts/idf.sh -p /dev/cu.usbmodem5C4C2137161 flash` to the connected ESP32-S3. Bootloader, partition table and application write hashes verified; the flasher reset the board successfully. No physical heap soak or playback verification performed.
+
+## 2026-10-25 (HomeDash dependency investigation)
+
+- **Finding** `HOMEDASH_DEPENDENCY_AUDIT.md` — document enabled HomeDash integration, HA voice ownership gating and recovery delays, shared remote/announcement routing, the HA-hosted announcement bridge, and independent Sendspin music transport. Read-only live HA checks showed Johan2 owning voice with a fresh heartbeat while HomeDash's heartbeat was hours old; this does not establish the cause of an earlier slowdown.
+- **Finding** `main/assist_client.cpp` — HomeDash posting tasks self-delete while C++ owning objects remain in scope, skipping destruction and leaking the post/string allocations; per-post tasks also have no global concurrency bound. HTTP/LED work runs separately from Assist/audio, but still shares heap/network resources. Record remediation without changing firmware or deployed configuration; accumulated hardware impact remains unmeasured. Existing Assist and announcement protocol tests passed with address/undefined-behaviour sanitizers.
+
 ## 2026-10-25 (announcement scheduling reliability)
 
 - **Wake transport** `main/assist_client.cpp`, `README.md` — live diagnostics reproduced repeated `transport_poll_write(0)` failures immediately after wake monitoring starts, with Wi-Fi at -54 to -56 dBm and microphone DSP within budget. Increase the audio-write deadline from 100 to 250 ms and the bounded microphone queue from 256 to 512 ms so transient TCP backpressure has room without disconnecting immediately; retain failure/reset behavior for longer stalls and log failed byte counts without audio. Physical wake-word recovery remains to be verified. (announcement scheduling reliability)

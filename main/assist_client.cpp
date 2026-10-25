@@ -228,11 +228,11 @@ void AssistClient::cancel_local_announcement() {
 // Shows what Assist heard or answered on HomeDash (via its proxy). Best effort, off the websocket task.
 struct HomeDashPost { std::string path; std::string text; };
 
-static void post_homedash_text(void* context) {
+static void perform_homedash_post(void* context) {
     std::unique_ptr<HomeDashPost> post(static_cast<HomeDashPost*>(context));
     std::string url = CONFIG_JOHAN2_HOMEDASH_TRANSCRIPT_URL;
     const auto slash = url.rfind('/');
-    if (slash == std::string::npos) { vTaskDelete(nullptr); return; }
+    if (slash == std::string::npos) return;
     url.resize(slash + 1);
     url += post->path;
     esp_http_client_config_t config{};
@@ -245,6 +245,12 @@ static void post_homedash_text(void* context) {
         if (esp_http_client_perform(client) != ESP_OK) ESP_LOGW(TAG, "Could not send %s to HomeDash", post->path.c_str());
         esp_http_client_cleanup(client);
     }
+}
+
+static void post_homedash_text(void* context) {
+    // Self-deletion does not unwind C++ objects. Return from the owning scope
+    // first so the post, its strings and the URL are freed on every exit path.
+    perform_homedash_post(context);
     vTaskDelete(nullptr);
 }
 
