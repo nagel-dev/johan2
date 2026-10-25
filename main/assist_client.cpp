@@ -180,7 +180,7 @@ void AssistClient::reset_audio(bool preserve_end_cue) {
 }
 
 void AssistClient::request_listening_cue(bool ending) {
-    if (!kListeningCue || !cue_.request(protocol_.run_id, esp_timer_get_time(), wake_tail_until_, ending)) return;
+    if (!kListeningCue || !protocol_.listening_cue_enabled || !cue_.request(protocol_.run_id, esp_timer_get_time(), wake_tail_until_, ending)) return;
     // Mute music before scheduling playback, including the first wake event.
     if (!ending) command_active_.store(true);
     xQueueReset(audio_queue_);

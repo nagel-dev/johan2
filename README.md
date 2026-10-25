@@ -209,7 +209,10 @@ The cues share the reply playback task and music mixer; they cannot overlap a di
 reply, which waits for the end cue to finish. If an interrupted reply does not
 release that task within 300 ms of cue
 readiness, the cue is skipped so listening can continue. Disable the option in
-menuconfig to restore silent command starts/ends. During initial music-stream
+menuconfig to restore silent command starts/ends. With `JOHAN2_HOMEDASH_SYNC`, the beeps can also be switched at runtime with
+`input_boolean.johan2_listening_cue` (from `ha/johan2_assist.yaml`; shown on
+HomeDash's Home screen). The helper starts off when first created: switch it on once.
+Only `off` mutes; a missing helper leaves the build default. During initial music-stream
 synchronization a cue can be dropped if the mixer does not consume it within
 250 ms; command handling remains bounded.
 

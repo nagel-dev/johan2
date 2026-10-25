@@ -7,6 +7,10 @@ input_button:
   johan2_assist_cancel:
     name: Johan2 cancel listening
     icon: mdi:microphone-off
+input_boolean:
+  johan2_listening_cue:
+    name: Johan2 listening beeps
+    icon: mdi:volume-high
 input_select:
   johan2_assist_state:
     name: Johan2 Assist state

@@ -6,6 +6,7 @@
 class AssistProtocol {
 public:
     enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, OwnerChanged, SyncError, Transcript, SpeechReady, StopTranscript, PlaybackAccepted, PlaybackFailed, Finished, Error, AuthInvalid };
+    bool listening_cue_enabled = true; // Follows input_boolean.johan2_listening_cue; on until HA says off.
     bool owns_voice = false; // Fail closed until HA grants this device voice ownership.
     bool authenticated = false;
     bool running = false;
@@ -14,6 +15,7 @@ public:
     bool unclear = false;        // STT heard nothing or the agent did not understand
     bool continue_conversation = false; // the agent asked a question and expects an answer
     bool speech_started = false; // HA reported voice activity in this run
+    bool silent = false;         // agent intentionally produced no spoken reply (e.g. it only played music)
     uint8_t handler = 0;
     int run_id = 0;
     bool announcement_pending = false;
@@ -29,7 +31,7 @@ public:
     void reset() {
         awaiting_wake_ = false;
         authenticated = running = streaming = command_active = false;
-        unclear = speech_started = continue_conversation = false;
+        unclear = speech_started = continue_conversation = silent = false;
         transcript_.clear();
         stop_running = stop_streaming = false;
         stop_handler = 0;
@@ -60,7 +62,7 @@ public:
         if (pipeline && *pipeline) doc["pipeline"] = pipeline;
         if (conversation_id && *conversation_id) doc["conversation_id"] = conversation_id;
         error_code_.clear();
-        unclear = speech_started = continue_conversation = false;
+        unclear = speech_started = continue_conversation = silent = false;
         transcript_.clear();
         response_media_.clear();
         response_url_.clear();
@@ -120,6 +122,7 @@ public:
         doc["entity_ids"].to<JsonArray>().add("input_button.johan2_assist_start");
         doc["entity_ids"].add("input_button.johan2_assist_cancel");
         doc["entity_ids"].add("input_select.voice_device");
+        doc["entity_ids"].add("input_boolean.johan2_listening_cue");
         std::string result;
         serializeJson(doc, result);
         return result;
@@ -196,6 +199,15 @@ public:
             const bool owner_seen = owner.is<const char*>() || owner_removed;
             const bool previous_owner = owns_voice;
             if (owner_seen) owns_voice = owner.is<const char*>() && owner.as<std::string>() == "johan2";
+            JsonVariantConst cue = changed["input_boolean.johan2_listening_cue"]["+"]["s"];
+            if (cue.isNull()) cue = added["input_boolean.johan2_listening_cue"]["s"];
+            if (cue.is<const char*>()) {
+                const std::string value = cue.as<std::string>();
+                if (value == "on") listening_cue_enabled = true;
+                else if (value == "off") listening_cue_enabled = false;
+            }
+            for (JsonVariantConst removed : doc["event"]["r"].as<JsonArrayConst>())
+                if (removed.as<std::string>() == "input_boolean.johan2_listening_cue") listening_cue_enabled = true;
             if (cancel) return Event::RemoteCancel;
             if (previous_owner != owns_voice) return Event::OwnerChanged;
             return start ? Event::RemoteStart : Event::None;
@@ -263,6 +275,9 @@ public:
                 spoken.pop_back();
             if (!spoken.empty() && spoken.back() == '?') continue_conversation = true;
             reply_text_ = spoken;
+            // HA's OpenAI agent reports a reply-less turn as this error; the action itself already ran.
+            silent = kind == "error" && code == "unknown" && spoken == "Unable to get response";
+            if (silent) reply_text_.clear();
             if (kind == "error" && (code == "no_intent_match" || code == "no_valid_targets")) unclear = true;
         } else if (event == "stt-vad-end") {
             return Event::Processing;
@@ -270,6 +285,8 @@ public:
             streaming = false;
             transcript_ = doc["event"]["data"]["stt_output"]["text"] | "";
             return transcript_.empty() ? Event::Processing : Event::Transcript;
+        } else if (event == "tts-end" && silent) {
+            streaming = command_active = false;
         } else if (event == "tts-end" && !speech_forwarded_) {
             const auto output = doc["event"]["data"]["tts_output"];
             response_media_ = output["media_id"] | "";

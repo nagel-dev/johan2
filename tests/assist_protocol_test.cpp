@@ -180,6 +180,14 @@ int main() {
     assert(!unclear.wants_followup(true, true));
     unclear.reset();
     assert(!unclear.unclear && !unclear.continue_conversation && !unclear.speech_started);
+    AssistProtocol quiet;
+    quiet.begin("", true, nullptr, true);
+    quiet.receive(R"({"id":1,"type":"event","event":{"type":"intent-end","data":{"intent_output":{"response":{"response_type":"error","data":{"code":"unknown"},"speech":{"plain":{"speech":"Unable to get response"}}}}}}})");
+    assert(quiet.silent && !quiet.unclear && !quiet.continue_conversation && quiet.reply_text().empty());
+    assert(quiet.receive(R"({"id":1,"type":"event","event":{"type":"tts-end","data":{"tts_output":{"media_id":"media-source://tts/err","url":"/api/tts_proxy/err.wav"}}}})") == Event::None);
+    assert(quiet.reply_url("ws://ha/api/websocket").empty() && quiet.receive(R"({"id":1,"type":"event","event":{"type":"run-end"}})") == Event::Finished);
+    quiet.begin("", true, nullptr, true);
+    assert(!quiet.silent);
     AssistProtocol fixed_gain;
     deserializeJson(command, fixed_gain.begin("", true, nullptr, true));
     assert(command["start_stage"] == "stt" && command["input"]["auto_gain_dbfs"] == 0);
@@ -201,6 +209,17 @@ int main() {
     owner.receive(R"({"id":1,"type":"event","event":{"a":{"input_select.voice_device":{"s":"johan2"}}}})");
     assert(owner.receive(R"({"id":1,"type":"event","event":{"r":["input_select.voice_device"]}})") == Event::OwnerChanged);
     assert(!owner.owns_voice);
+    assert(command["entity_ids"][3] == "input_boolean.johan2_listening_cue");
+    assert(owner.listening_cue_enabled); // Beeps stay on until HA reports off.
+    assert(owner.receive(R"({"id":1,"type":"event","event":{"a":{"input_boolean.johan2_listening_cue":{"s":"off"}}}})") == Event::None);
+    assert(!owner.listening_cue_enabled);
+    owner.receive(R"({"id":1,"type":"event","event":{"c":{"input_boolean.johan2_listening_cue":{"+":{"s":"unavailable"}}}}})");
+    assert(!owner.listening_cue_enabled); // Transient unavailability keeps the last choice.
+    owner.receive(R"({"id":1,"type":"event","event":{"c":{"input_boolean.johan2_listening_cue":{"+":{"s":"on"}}}}})");
+    assert(owner.listening_cue_enabled);
+    owner.receive(R"({"id":1,"type":"event","event":{"c":{"input_boolean.johan2_listening_cue":{"+":{"s":"off"}}}}})");
+    owner.receive(R"({"id":1,"type":"event","event":{"r":["input_boolean.johan2_listening_cue"]}})");
+    assert(owner.listening_cue_enabled); // A removed helper restores the default.
     deserializeJson(command, owner.heartbeat());
     assert(command["domain"] == "input_button" && command["service"] == "press");
     assert(command["target"]["entity_id"] == "input_button.johan2_voice_heartbeat");
