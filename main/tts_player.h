@@ -2,7 +2,9 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include "esp_http_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -18,12 +20,13 @@ public:
     // Uses the same single playback task/buffer as replies; never overlaps them.
     bool start_listening_cue(bool ending = false);
     // Stops playback early; poll() then reports Ok.
-    void cancel() { if (busy_.load()) cancel_.store(true); }
+    void cancel();
     // Returns the finished request's result once, then None.
     Result poll() { return static_cast<Result>(result_.exchange(None)); }
     // Unsupported: nothing was played, so the caller may fall back. Failed: audio may have played.
 private:
     static void task(void* context);
+    static esp_err_t http_event(esp_http_client_event_t* event);
     Result play();
     Result play_listening_cue();
     bool feed_samples(const uint8_t* data, size_t length);
@@ -34,6 +37,8 @@ private:
     std::atomic<bool> busy_{false};
     std::atomic<bool> cancel_{false};
     std::atomic<int> result_{None};
+    std::mutex http_mutex_;
+    int http_socket_{-1}; // Published/withdrawn by HTTP events before the socket closes.
     std::string url_;
     bool cue_{false}; // Published by task notification, owned until busy_ clears.
     bool cue_ending_{false};

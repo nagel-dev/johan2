@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-10-25 (review: TTS fetch cancellation)
+
+- **Fix** `main/tts_player.cpp/.h`, `tests/tts_cancel_test.py`, `README.md` — interrupt established TTS header/body reads with socket shutdown when voice playback is cancelled, so that a stalled response does not hold the shared playback task and next voice command until the thirty-second read timeout. Publish and withdraw the socket under a task-context mutex using ESP-IDF's pre-close disconnect event to prevent descriptor-reuse races, including cancellation just before connection. Bound each transport connection to two seconds while retaining thirty seconds for connected synthesis reads; DNS remains network-stack controlled. Sanitized host checks cover blocked sockets, late publication, idle cancellation and descriptor reuse across 100 lifecycles; the ESP-IDF build passes. No flashing or physical barge-in validation.
+
 ## 2026-10-25 (review: partial announcement writes)
 
 - **Fix** `main/audio_output.cpp/.h`, `tests/audio_output_test.py`, `README.md` — retain speech in the existing shared scratch buffer until I2S accepts it, top up retained tails without inserting gaps, and include them in direct fallback, drain deadlines and cancellation/reset cleanup, so that partial or zero-byte music writes cannot silently truncate announcements or acknowledge missing speech. Account for partial direct writes before propagating errors to avoid replaying their accepted prefix. Sanitized host checks exercise actual output methods across partial/zero writes, stream end, direct fallback, drain timeout, resets and music ducking; the ESP-IDF build passes. Physical listening remains unverified.

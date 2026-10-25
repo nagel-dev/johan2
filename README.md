@@ -212,6 +212,11 @@ firmware task or music pause/resume call is needed.
 Notifications wait behind active voice capture, processing, replies and cues, with
 an 85-second total queue/playback deadline. Reconnect snapshots are not replayed;
 empty/unavailable URL helpers and remote start/cancel interrupt pending playback.
+Cancellation shuts down an established TTS request's socket to interrupt blocked
+header/body reads. Connection setup uses a two-second transport timeout; once
+connected, HA still has thirty seconds per read to synthesize speech. DNS lookup
+timing remains controlled by the network stack. Socket lifetime is synchronized
+with HTTP disconnect events so an unrelated reused descriptor cannot be cancelled.
 The bridge serializes notifications and reports failures rather than retrying
 through Music Assistant, which could duplicate speech or stop music again. The
 audio tail is drained before completion is acknowledged and music returns to its
@@ -281,6 +286,7 @@ c++ -std=c++17 -Wall -Wextra -Werror -I tests/tts_stubs -I main \
 /tmp/johan2-tts-http-test
 python3 tests/audio_output_test.py
 python3 tests/network_retry_test.py
+python3 tests/tts_cancel_test.py
 ```
 
 Protocol reference: <https://developers.home-assistant.io/docs/voice/pipelines/>.

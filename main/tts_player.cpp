@@ -2,6 +2,7 @@
 #include "tts_http.h"
 #include <algorithm>
 #include <cstring>
+#include <cerrno>
 #include "audio_output.h"
 #include "listening_cue.h"
 #include "esp_audio_simple_dec.h"
@@ -10,6 +11,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "lwip/sockets.h"
 
 static const char* TAG = "tts";
 static constexpr uint32_t OUTPUT_RATE = 48000;
@@ -45,6 +47,33 @@ bool TtsPlayer::start_listening_cue(bool ending) {
     cancel_.store(false);
     xTaskNotifyGive(task_);
     return true;
+}
+
+void TtsPlayer::cancel() {
+    if (!busy_.load()) return;
+    cancel_.store(true);
+    std::lock_guard<std::mutex> lock(http_mutex_);
+    if (http_socket_ >= 0 && shutdown(http_socket_, SHUT_RDWR) != 0 && errno != ENOTCONN)
+        ESP_LOGW(TAG, "Could not interrupt reply fetch: errno %d", errno);
+}
+
+esp_err_t TtsPlayer::http_event(esp_http_client_event_t* event) {
+    auto& self = *static_cast<TtsPlayer*>(event->user_data);
+    if (event->event_id == HTTP_EVENT_ON_CONNECTED) {
+        ESP_ERROR_CHECK(esp_http_client_set_timeout_ms(event->client, 30000));
+        {
+            std::lock_guard<std::mutex> lock(self.http_mutex_);
+            self.http_socket_ = esp_http_client_get_socket(event->client);
+        }
+        if (self.cancel_.load()) self.cancel();
+    } else if (event->event_id == HTTP_EVENT_DISCONNECTED) {
+        // ESP-IDF emits this event before closing the transport. Serialize with
+        // shutdown so cancellation cannot touch a descriptor reused by another task.
+        std::lock_guard<std::mutex> lock(self.http_mutex_);
+        self.http_socket_ = -1;
+        ESP_ERROR_CHECK(esp_http_client_set_timeout_ms(event->client, 2000));
+    }
+    return ESP_OK;
 }
 
 void TtsPlayer::task(void* context) {
@@ -183,8 +212,10 @@ TtsPlayer::Result TtsPlayer::play() {
     if (!decoded_) return Failed;
     esp_http_client_config_t config{};
     config.url = url_.c_str();
-    config.timeout_ms = 30000; // HA synthesizes on demand; slow TTS must not fall back to the player
+    config.timeout_ms = 2000; // Bound connection setup; connected synthesis reads retain 30 seconds.
     config.buffer_size = 2048;
+    config.event_handler = http_event;
+    config.user_data = this;
     auto client = esp_http_client_init(&config);
     if (!client) return Failed;
     Result result = Failed;
