@@ -236,6 +236,10 @@ reboot. Missing token leaves the player and microphone LED test functional.
 Firmware compilation and host protocol tests do not verify physical wake-word
 recognition, LAN connectivity or playback quality.
 
+Microphone transport allows up to 250 ms for a WebSocket write and buffers at most
+512 ms of captured audio. Longer stalls still restart Assist rather than delivering
+stale commands. A failed write logs only byte counts, never captured audio.
+
 By default, command listening has short local beeps (80 ms,
 `JOHAN2_LISTENING_CUE`): 1200 Hz when listening starts and a lower 600 Hz when
 command capture ends, including cancellation and follow-up silence timeout.

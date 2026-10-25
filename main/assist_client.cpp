@@ -47,7 +47,7 @@ void AssistClient::start(AudioOutput* audio) {
     }
     // Never emit WebSocket payloads or authentication data at debug level.
     esp_log_level_set("websocket_client", ESP_LOG_WARN);
-    audio_queue_ = xQueueCreate(16, sizeof(Audio)); // At most 256 ms of microphone audio.
+    audio_queue_ = xQueueCreate(32, sizeof(Audio)); // At most 512 ms, including bounded send backpressure.
     messages_ = xQueueCreate(32, sizeof(Message));
     ESP_ERROR_CHECK(audio_queue_ && messages_ ? ESP_OK : ESP_ERR_NO_MEM);
     esp_websocket_client_config_t cfg{};
@@ -265,8 +265,10 @@ bool AssistClient::send_audio(const int16_t* samples, size_t count) {
         packet[2 + i * 2] = sample >> 8;
     }
     const int length = 1 + count * 2;
-    return esp_websocket_client_send_bin(socket_, reinterpret_cast<char*>(packet), length,
-                                          pdMS_TO_TICKS(100)) == length;
+    const int sent = esp_websocket_client_send_bin(socket_, reinterpret_cast<char*>(packet), length,
+                                                   pdMS_TO_TICKS(250));
+    if (sent != length) ESP_LOGW(TAG, "Microphone transport write failed: %d/%d bytes", sent, length);
+    return sent == length;
 }
 
 #if CONFIG_JOHAN2_WAKE_VAD
