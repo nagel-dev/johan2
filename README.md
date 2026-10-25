@@ -178,16 +178,50 @@ adjusted if speech clips or is too quiet.
 
 Music retains the coloured LED effect, with white microphone activity as before.
 After wake-word detection or remote command activation, music is digitally muted
-while the command is being captured, until HA reports the end of speech. It
-returns during processing without changing the player volume setting. During direct spoken replies, music remains at one fifth volume. Acoustic echo cancellation is optional and disabled by default; without it, loud
-speaker audio can still impair wake-word detection. See the AEC test below. When `JOHAN2_HA_REPLY_PLAYER` is set, the pipeline
-continues through text-to-speech. Its generated audio is forwarded to that HA
+while the command is being captured, until HA reports the end of speech. Music
+returns during processing without changing the player volume setting. During
+direct spoken replies and local announcements, music remains at half volume,
+including player volumes below 5%. Acoustic echo cancellation is optional and
+disabled by default; without it, loud speaker audio can still impair wake-word
+detection. See the AEC test below. `JOHAN2_TTS_DIRECT` plays HA-generated MP3/WAV
+replies through the local mixer. When it is disabled or a reply cannot be decoded,
+`JOHAN2_HA_REPLY_PLAYER` forwards the generated audio to that HA
 media player using `media_player.play_media` with `announce: true`; Music Assistant
 handles playback and restoration of the music queue through Sendspin. Firmware
 ducking ends before the reply so speech is not attenuated. Capture stays stopped
 while the announcement service request is pending, with a 90-second watchdog and
 no automatic announcement retry (to avoid duplicate replies). Without a reply
 player configured, commands still work but there are no spoken answers.
+
+Automatic notifications from the shared HA `script.announce` (for example the rice
+cooker and shower timer) can use the same local mixer instead of interrupting the
+Music Assistant queue. Install the updated HomeDash HA announcement component and
+`ha/packages/announce.yaml` from the sibling HomeDash repository, and enable
+`JOHAN2_TTS_DIRECT`. The shared script targets `media_player.johan2_announcements`,
+not the music player `media_player.johan2_aux`; it retains the selected TTS engine,
+quiet hours and owner/HomeDash routing. The authenticated Assist connection follows
+`input_text.johan2_announcement_url` and reports `queued:<token>`,
+`playing:<token>`, `done:<token>` or `error:<token>` through
+`input_text.johan2_announcement_status`. No admin event-bus subscription, new
+firmware task or music pause/resume call is needed.
+
+Notifications wait behind active voice capture, processing, replies and cues, with
+an 85-second total queue/playback deadline. Reconnect snapshots are not replayed;
+empty/unavailable URL helpers and remote start/cancel interrupt pending playback.
+The bridge serializes notifications and reports failures rather than retrying
+through Music Assistant, which could duplicate speech or stop music again. The
+audio tail is drained before completion is acknowledged and music returns to its
+normal level. Direct `tts.speak` calls to the MA music entity still use MA's
+stop-and-restore behavior; use the shared script or local announcement entity.
+
+The short HA proxy URL redirects to the generated audio. Direct playback follows
+up to three HTTP redirects and discards each redirect response body before decoding
+MP3/WAV, including redirects back to the same HA host. A request can still fail if
+the fetch or audio output fails; errors are reported rather than acknowledged as
+successful or retried through MA. If Sendspin temporarily stops delivering PCM,
+speech drains the queued samples in order and writes directly to I2S rather than
+waiting indefinitely for an inactive mixer. Concurrent I2S writes are serialized,
+while normal speech-buffer production does not wait on the music writer's lock.
 
 The selected HA conversation agent must be allowed to see relevant entities. For
 “is de achterdeur open?”, expose the door sensor to Assist and give it a clear
@@ -225,6 +259,16 @@ c++ -std=c++17 -Wall -Wextra -Werror -I main \
   -I managed_components/bblanchon__arduinojson/src \
   tests/assist_protocol_test.cpp -o /tmp/johan2-assist-protocol-test
 /tmp/johan2-assist-protocol-test
+c++ -std=c++17 -Wall -Wextra -Werror -I main \
+  -I managed_components/bblanchon__arduinojson/src \
+  tests/announcement_protocol_test.cpp -o /tmp/johan2-announcement-protocol-test
+/tmp/johan2-announcement-protocol-test
+c++ -std=c++17 -Wall -Wextra -Werror -I main \
+  tests/audio_mix_test.cpp -o /tmp/johan2-audio-mix-test
+/tmp/johan2-audio-mix-test
+c++ -std=c++17 -Wall -Wextra -Werror -I tests/tts_stubs -I main \
+  tests/tts_http_test.cpp -o /tmp/johan2-tts-http-test
+/tmp/johan2-tts-http-test
 ```
 
 Protocol reference: <https://developers.home-assistant.io/docs/voice/pipelines/>.

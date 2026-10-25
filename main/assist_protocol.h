@@ -1,11 +1,12 @@
 #pragma once
 #include <ArduinoJson.h>
+#include <cstring>
 #include <string>
 
 // HA Assist wire state, kept independent of ESP-IDF so it can be tested on a host.
 class AssistProtocol {
 public:
-    enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, OwnerChanged, SyncError, WifiError, Transcript, SpeechReady, StopTranscript, PlaybackAccepted, PlaybackFailed, Silent, Finished, Error, AuthInvalid };
+    enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, OwnerChanged, SyncError, WifiError, LocalAnnouncement, LocalAnnouncementStop, LocalAnnouncementError, Transcript, SpeechReady, StopTranscript, PlaybackAccepted, PlaybackFailed, Silent, Finished, Error, AuthInvalid };
     bool listening_cue_enabled = true; // Follows input_boolean.johan2_listening_cue; on until HA says off.
     bool owns_voice = false; // Fail closed until HA grants this device voice ownership.
     bool authenticated = false;
@@ -39,6 +40,10 @@ public:
         stop_id_ = 0;
         handler = 0;
         control_id_ = state_id_ = heartbeat_id_ = wifi_id_ = 0;
+        local_subscription_id_ = local_status_id_ = 0;
+        local_url_.clear();
+        local_token_.clear();
+        last_local_url_.clear();
         owns_voice = false;
         last_start_.clear();
         last_cancel_.clear();
@@ -140,6 +145,29 @@ public:
         serializeJson(doc, result);
         return result;
     }
+    std::string subscribe_announcements() {
+        JsonDocument doc;
+        doc["id"] = local_subscription_id_ = ++next_id_;
+        doc["type"] = "subscribe_entities";
+        doc["entity_ids"].to<JsonArray>().add("input_text.johan2_announcement_url");
+        std::string result;
+        serializeJson(doc, result);
+        return result;
+    }
+    const std::string& local_announcement_url() const { return local_url_; }
+    const std::string& local_announcement_token() const { return local_token_; }
+    std::string local_announcement_status(const std::string& token, const char* state) {
+        JsonDocument doc;
+        doc["id"] = local_status_id_ = ++next_id_;
+        doc["type"] = "call_service";
+        doc["domain"] = "input_text";
+        doc["service"] = "set_value";
+        doc["target"]["entity_id"] = "input_text.johan2_announcement_status";
+        doc["service_data"]["value"] = std::string(state) + ":" + token;
+        std::string result;
+        serializeJson(doc, result);
+        return result;
+    }
     std::string heartbeat() {
         JsonDocument doc;
         doc["id"] = heartbeat_id_ = ++next_id_;
@@ -185,6 +213,42 @@ public:
         if (type == "auth_required") return Event::Authenticate;
         if (type == "auth_ok") { authenticated = true; return Event::Ready; }
         if (type == "auth_invalid") { reset(); return Event::AuthInvalid; }
+        if (type == "result" && doc["success"] == false &&
+            ((local_subscription_id_ && (doc["id"] | -1) == local_subscription_id_) ||
+             (local_status_id_ && (doc["id"] | -1) == local_status_id_))) return Event::LocalAnnouncementError;
+        if (authenticated && local_subscription_id_ && type == "event" &&
+            (doc["id"] | -1) == local_subscription_id_) {
+            // A reconnect snapshot must not replay an already spoken notification.
+            const auto added = doc["event"]["a"]["input_text.johan2_announcement_url"]["s"];
+            if (added.is<const char*>()) last_local_url_ = added.as<std::string>();
+            for (JsonVariantConst removed : doc["event"]["r"].as<JsonArrayConst>()) {
+                if (removed.as<std::string>() == "input_text.johan2_announcement_url") {
+                    last_local_url_.clear();
+                    return Event::LocalAnnouncementStop;
+                }
+            }
+            const auto changed = doc["event"]["c"]["input_text.johan2_announcement_url"]["+"]["s"];
+            if (!changed.is<const char*>()) return Event::None;
+            const std::string url = changed.as<std::string>();
+            if (url == last_local_url_) return Event::None;
+            last_local_url_ = url;
+            local_url_.clear();
+            local_token_.clear();
+            if (url.empty() || url == "unknown" || url == "unavailable") return Event::LocalAnnouncementStop;
+            const auto scheme = url.find("://");
+            const auto path = scheme == std::string::npos ? std::string::npos : url.find('/', scheme + 3);
+            static constexpr const char* proxy = "/api/homedash_announcement/";
+            if (url.size() > 255 || (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) ||
+                path == std::string::npos || url.compare(path, strlen(proxy), proxy) != 0)
+                return Event::LocalAnnouncementError;
+            const std::string token = url.substr(path + strlen(proxy));
+            if (token.empty() || token.size() > 64 ||
+                token.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != std::string::npos)
+                return Event::LocalAnnouncementError;
+            local_url_ = url;
+            local_token_ = token;
+            return Event::LocalAnnouncement;
+        }
         if (type == "result" && announcement_pending && (doc["id"] | -1) == announcement_id) {
             announcement_pending = false;
             return doc["success"] == true ? Event::PlaybackAccepted : Event::PlaybackFailed;
@@ -383,6 +447,8 @@ private:
     }
     int next_id_ = 0;
     int control_id_ = 0, state_id_ = 0, heartbeat_id_ = 0, wifi_id_ = 0;
+    int local_subscription_id_ = 0, local_status_id_ = 0;
+    std::string local_url_, local_token_, last_local_url_;
     std::string last_start_, last_cancel_;
     static bool pressed(JsonVariantConst state, std::string& previous) {
         if (!state.is<const char*>()) return false;

@@ -158,7 +158,10 @@ void AssistClient::cancel_command(bool stop_playback) {
     followup_deadline_ = 0;
     remote_start_pending_ = false;
     reset_audio();
-    if (stop_playback && direct_playing_) tts_.cancel();
+    if (stop_playback) {
+        cancel_local_announcement();
+        if (direct_playing_) tts_.cancel();
+    }
     if (protocol_.stop_running && !send_text(protocol_.cancel_stop())) transport_failed_.store(true);
     if (protocol_.running && !send_text(protocol_.cancel_run())) transport_failed_.store(true);
     retry_at_ = 0;
@@ -195,6 +198,30 @@ void AssistClient::forward_to_player() {
         announcement_deadline_ = esp_timer_get_time() + 90000000;
         ESP_LOGI(TAG, "Sending spoken reply to Music Assistant player");
         if (!send_text(request)) transport_failed_.store(true);
+    }
+}
+
+void AssistClient::report_local_announcement(const std::string& token, const char* state) {
+    if (protocol_.authenticated && esp_websocket_client_is_connected(socket_) &&
+        !send_text(protocol_.local_announcement_status(token, state)))
+        ESP_LOGW(TAG, "Local announcement status could not be sent");
+}
+
+void AssistClient::finish_local_announcement(bool success) {
+    report_local_announcement(local_announcement_token_, success ? "done" : "error");
+    ESP_LOGI(TAG, "Local announcement %s", success ? "finished" : "failed or cancelled");
+    local_announcement_url_.clear();
+    local_announcement_token_.clear();
+    local_announcement_playing_ = local_announcement_cancelled_ = false;
+}
+
+void AssistClient::cancel_local_announcement() {
+    if (local_announcement_token_.empty()) return;
+    if (local_announcement_playing_) {
+        local_announcement_cancelled_ = true;
+        tts_.cancel();
+    } else {
+        finish_local_announcement(false);
     }
 }
 
@@ -262,6 +289,7 @@ void AssistClient::run() {
             ESP_LOGW(TAG, "Restarting Assist: %s (state %s)",
                      failed ? "transport failure" : "pipeline/playback timeout", assist_state_);
             publish_state("error");
+            cancel_local_announcement();
             reset_audio();
             // Must be called outside the WebSocket callback/task.
             esp_websocket_client_stop(socket_);
@@ -276,6 +304,7 @@ void AssistClient::run() {
         Message message;
         if (xQueueReceive(messages_, &message, pdMS_TO_TICKS(10)) == pdTRUE) {
             if (message.type == WEBSOCKET_EVENT_CONNECTED || message.type == WEBSOCKET_EVENT_DISCONNECTED) {
+                cancel_local_announcement();
                 reset_audio();
                 protocol_.reset();
                 remote_start_pending_ = followup_ = false;
@@ -305,6 +334,7 @@ void AssistClient::run() {
                     ESP_LOGI(TAG, "HA authenticated");
                     retry_at_ = 0;
                     wifi_report_at_ = 0;
+                    if (kDirectReplies && !send_text(protocol_.subscribe_announcements())) transport_failed_.store(true);
 #ifdef CONFIG_JOHAN2_HOMEDASH_SYNC
                     if (!send_text(protocol_.subscribe_control())) transport_failed_.store(true);
                     if (!send_text(protocol_.pipeline_update(CONFIG_JOHAN2_HA_PIPELINE))) ESP_LOGW(TAG, "Pipeline report delayed");
@@ -312,6 +342,7 @@ void AssistClient::run() {
                     publish_state(remote_start_pending_ ? "starting" : "idle", true);
                 } else if (result == AssistProtocol::Event::AuthInvalid) {
                     ESP_LOGE(TAG, "HA token rejected; update local sdkconfig and rebuild");
+                    cancel_local_announcement();
                     reset_audio();
                     esp_websocket_client_stop(socket_);
                     vTaskDelete(nullptr);
@@ -320,6 +351,21 @@ void AssistClient::run() {
                     ESP_LOGW(TAG, "HomeDash sync rejected; check HA helpers and device permissions");
                 } else if (result == AssistProtocol::Event::WifiError) {
                     ESP_LOGW(TAG, "Wi-Fi sensor report rejected; check script.johan2_wifi_report and HA permissions");
+                } else if (result == AssistProtocol::Event::LocalAnnouncementError) {
+                    ESP_LOGW(TAG, "Local announcement rejected; check HA bridge, helpers, URL and permissions");
+                } else if (result == AssistProtocol::Event::LocalAnnouncementStop) {
+                    cancel_local_announcement();
+                } else if (result == AssistProtocol::Event::LocalAnnouncement) {
+                    const auto& token = protocol_.local_announcement_token();
+                    if (!local_announcement_token_.empty()) {
+                        ESP_LOGW(TAG, "Local announcement rejected: another notification is pending");
+                        report_local_announcement(token, "error");
+                    } else {
+                        local_announcement_url_ = protocol_.local_announcement_url();
+                        local_announcement_token_ = token;
+                        local_announcement_deadline_ = esp_timer_get_time() + 85000000;
+                        report_local_announcement(token, "queued");
+                    }
                 } else if (result == AssistProtocol::Event::OwnerChanged) {
                     ESP_LOGI(TAG, "Voice ownership %s", protocol_.owns_voice ? "granted" : "revoked");
                     if (!protocol_.owns_voice) cancel_command(true);
@@ -338,6 +384,7 @@ void AssistClient::run() {
                         followup_count_ = 0;
                         remote_start_pending_ = true;
                         reset_audio();
+                        cancel_local_announcement();
                         if (direct_playing_) tts_.cancel();
                         if (protocol_.stop_running && !send_text(protocol_.cancel_stop())) transport_failed_.store(true);
                         if (protocol_.running && !send_text(protocol_.cancel_run())) transport_failed_.store(true);
@@ -347,7 +394,7 @@ void AssistClient::run() {
                     }
                 } else if (result == AssistProtocol::Event::RemoteCancel) {
                     if (protocol_.command_active || remote_start_pending_ || strcmp(assist_state_, "starting") == 0 ||
-                        direct_playing_) {
+                        direct_playing_ || !local_announcement_token_.empty()) {
                         const bool was_listening = protocol_.command_active && protocol_.streaming;
                         ESP_LOGI(TAG, "Cancelled by button");
                         cancel_command(true);
@@ -413,6 +460,7 @@ void AssistClient::run() {
                         announcement_deadline_ = esp_timer_get_time() + 90000000;
                     } else if (!url.empty() && tts_.start(url)) {
                         direct_playing_ = true;
+                        direct_timed_out_ = false;
                         announcement_deadline_ = esp_timer_get_time() + 90000000;
                         ESP_LOGI(TAG, "Playing spoken reply on this device");
                     } else {
@@ -514,15 +562,26 @@ void AssistClient::run() {
             const auto result = tts_.poll();
             if (result != TtsPlayer::None) {
                 direct_playing_ = false;
+                const bool local = local_announcement_playing_;
+                const bool success = result == TtsPlayer::Ok && !direct_timed_out_ &&
+                                     (!local || !local_announcement_cancelled_);
                 // A fallback to the reply player is still coming, so this is not an error yet.
-                const bool falling_back = result == TtsPlayer::Unsupported && strlen(CONFIG_JOHAN2_HA_REPLY_PLAYER);
-                if (!remote_start_pending_) publish_state(result == TtsPlayer::Ok ? "idle" : falling_back ? "speaking" : "error");
-                ESP_LOGI(TAG, "Direct reply %s %lld ms after audio ready", result == TtsPlayer::Ok ? "played" : "failed",
-                         (long long)((now - speech_at_) / 1000));
-                if (result == TtsPlayer::Unsupported && strlen(CONFIG_JOHAN2_HA_REPLY_PLAYER)) forward_to_player();
-                retry_at_ = std::max(retry_at_, now + 1000000);
-            } else if (now >= announcement_deadline_) {
-                direct_playing_ = false;
+                const bool falling_back = !local && !direct_timed_out_ && result == TtsPlayer::Unsupported &&
+                                          strlen(CONFIG_JOHAN2_HA_REPLY_PLAYER);
+                if (!remote_start_pending_) publish_state(success ? "idle" : falling_back ? "speaking" : "error");
+                if (local) {
+                    finish_local_announcement(success);
+                } else {
+                    ESP_LOGI(TAG, "Direct reply %s %lld ms after audio ready", success ? "played" : "failed",
+                             (long long)((now - speech_at_) / 1000));
+                    if (falling_back) forward_to_player();
+                }
+                retry_at_ = std::max(retry_at_, now + (local ? 80000 : 1000000));
+            } else if (!direct_timed_out_ && now >= announcement_deadline_) {
+                // Keep ownership of the shared task until it reports completion.
+                direct_timed_out_ = true;
+                tts_.cancel();
+                ESP_LOGW(TAG, "Direct playback timed out");
                 publish_state("error");
             }
         }
@@ -543,6 +602,7 @@ void AssistClient::run() {
             if (tts_.start(deferred_reply_)) {
                 deferred_reply_.clear();
                 direct_playing_ = true;
+                direct_timed_out_ = false;
                 announcement_deadline_ = now + 90000000;
                 ESP_LOGI(TAG, "Playing spoken reply after listening end cue");
             } else if (now >= announcement_deadline_) {
@@ -550,9 +610,30 @@ void AssistClient::run() {
                 forward_to_player();
             }
         }
+        if (!local_announcement_token_.empty() && !local_announcement_playing_) {
+            if (now >= local_announcement_deadline_) {
+                ESP_LOGW(TAG, "Local announcement expired while waiting for voice playback");
+                finish_local_announcement(false);
+            } else if (!protocol_.command_active && !protocol_.announcement_pending && !remote_start_pending_ &&
+                       !direct_playing_ && deferred_reply_.empty() && !cue_.blocked(now)) {
+                // Stop wake monitoring, not the Sendspin stream or its music queue.
+                if (protocol_.running && !send_text(protocol_.cancel_run())) transport_failed_.store(true);
+                if (protocol_.stop_running && !send_text(protocol_.cancel_stop())) transport_failed_.store(true);
+                reset_audio();
+                if (!transport_failed_.load() && tts_.start(local_announcement_url_)) {
+                    direct_playing_ = local_announcement_playing_ = true;
+                    direct_timed_out_ = local_announcement_cancelled_ = false;
+                    announcement_deadline_ = local_announcement_deadline_;
+                    report_local_announcement(local_announcement_token_, "playing");
+                    publish_state("speaking");
+                    ESP_LOGI(TAG, "Playing local announcement over music");
+                }
+            }
+        }
         // Keep a short "stop" listener alive while the answer is processed or spoken.
         const bool busy = kStopListener && protocol_.authenticated && !protocol_.announcement_pending &&
-                          ((protocol_.running && !protocol_.streaming && strcmp(assist_state_, "processing") == 0) || direct_playing_);
+                          ((protocol_.running && !protocol_.streaming && strcmp(assist_state_, "processing") == 0) ||
+                           (direct_playing_ && !local_announcement_playing_));
         if (busy && !protocol_.stop_running && now >= stop_retry_at_) {
             stop_retry_at_ = now + 300000;
             if (!send_text(protocol_.begin_stop(CONFIG_JOHAN2_HA_PIPELINE))) transport_failed_.store(true);
@@ -567,7 +648,8 @@ void AssistClient::run() {
             true;
 #endif
         if (voice_allowed && protocol_.authenticated && !protocol_.running && !protocol_.announcement_pending &&
-            !direct_playing_ && deferred_reply_.empty() && !cue_.blocked(now) && now >= retry_at_) {
+            !direct_playing_ && local_announcement_token_.empty() && deferred_reply_.empty() &&
+            !cue_.blocked(now) && now >= retry_at_) {
             reset_audio();
             // A pipeline that never starts must not leave the UI on "starting" for five minutes.
             run_deadline_ = now + 10000000;

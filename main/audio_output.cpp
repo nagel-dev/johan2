@@ -1,5 +1,6 @@
 #include "sdkconfig.h"
 #include "audio_output.h"
+#include "audio_mix.h"
 #include "assist_client.h"
 #include "mic_diagnostics.h"
 #include "mic_pcm.h"
@@ -306,53 +307,76 @@ void AudioOutput::tx_enable_locked() {
 }
 
 bool AudioOutput::tts_begin() {
+    xSemaphoreTake(tx_lock_, portMAX_DELAY);
     xStreamBufferReset(tts_buf_);
     tts_running_.store(true);
-    xSemaphoreTake(tx_lock_, portMAX_DELAY);
     tx_enable_locked();
     xSemaphoreGive(tx_lock_);
     return true;
 }
 
-void AudioOutput::tts_write(const int16_t* frames, size_t frame_count) {
+bool AudioOutput::music_writer_recent() const {
+    const int64_t last = music_write_at_.load();
+    return active_.load() && last && esp_timer_get_time() - last < 100000;
+}
+
+bool AudioOutput::write_tts_locked(const void* data, size_t bytes) {
+    size_t written = 0;
+    const esp_err_t err = i2s_channel_write(tx_, data, bytes, &written, 200);
+    if (err == ESP_OK && written == bytes) return true;
+    ESP_LOGW(TAG, "Direct speech write failed: %s (%u/%u bytes)", esp_err_to_name(err),
+             static_cast<unsigned>(written), static_cast<unsigned>(bytes));
+    return false;
+}
+
+bool AudioOutput::tts_write(const int16_t* frames, size_t frame_count, const std::atomic<bool>& cancel) {
     const int gain = CONFIG_JOHAN2_TTS_VOLUME;
     size_t done = 0;
-    while (done < frame_count) {
+    while (done < frame_count && !cancel.load()) {
         const size_t n = std::min(frame_count - done, sizeof(tts_scratch_) / (CHANNELS * sizeof(int16_t)));
         for (size_t i = 0; i < n * CHANNELS; ++i)
             tts_scratch_[i] = static_cast<int16_t>(static_cast<int32_t>(frames[done * CHANNELS + i]) * gain / 100);
         const size_t bytes = n * CHANNELS * sizeof(int16_t);
-        xSemaphoreTake(tx_lock_, portMAX_DELAY);
-        if (active_.load()) {
-            // Music is streaming: its writer mixes this buffer in.
-            xSemaphoreGive(tx_lock_);
-            size_t sent_bytes = 0;
-            while (sent_bytes < bytes && active_.load()) {
+        size_t sent_bytes = 0;
+        while (sent_bytes < bytes && !cancel.load()) {
+            if (music_writer_recent()) {
                 sent_bytes += xStreamBufferSend(tts_buf_, reinterpret_cast<uint8_t*>(tts_scratch_) + sent_bytes,
                                                 bytes - sent_bytes, pdMS_TO_TICKS(100));
+                continue;
             }
-        } else {
-            size_t written = 0;
-            i2s_channel_write(tx_, tts_scratch_, bytes, &written, 1000);
-            xSemaphoreGive(tx_lock_);
+            xSemaphoreTake(tx_lock_, portMAX_DELAY);
+            if (music_writer_recent()) {
+                xSemaphoreGive(tx_lock_);
+                continue;
+            } else {
+                // Stream-start does not guarantee PCM delivery. Drain older speech first.
+                const size_t pending = xStreamBufferReceive(tts_buf_, mix_scratch_, sizeof(mix_scratch_), 0);
+                const bool ok = pending ? write_tts_locked(mix_scratch_, pending) :
+                    write_tts_locked(reinterpret_cast<uint8_t*>(tts_scratch_) + sent_bytes, bytes - sent_bytes);
+                xSemaphoreGive(tx_lock_);
+                if (!ok) return false;
+                if (!pending) sent_bytes = bytes;
+            }
         }
         done += n;
     }
+    return !cancel.load();
 }
 
 bool AudioOutput::tts_drain(uint32_t timeout_ms) {
     const int64_t deadline = esp_timer_get_time() + int64_t(timeout_ms) * 1000;
     while (xStreamBufferBytesAvailable(tts_buf_)) {
         if (esp_timer_get_time() >= deadline) return false;
+        if (music_writer_recent()) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
         xSemaphoreTake(tx_lock_, portMAX_DELAY);
-        if (!active_.load()) {
-            // If music stopped mid-cue, its mixer no longer consumes the tail.
-            // This is the same single TTS producer task; the samples are scaled.
-            const size_t bytes = xStreamBufferReceive(tts_buf_, tts_scratch_, sizeof(tts_scratch_), 0);
-            size_t written = 0;
-            const esp_err_t err = i2s_channel_write(tx_, tts_scratch_, bytes, &written, 100);
+        if (!music_writer_recent()) {
+            const size_t bytes = xStreamBufferReceive(tts_buf_, mix_scratch_, sizeof(mix_scratch_), 0);
+            const bool ok = !bytes || write_tts_locked(mix_scratch_, bytes);
             xSemaphoreGive(tx_lock_);
-            if (err != ESP_OK || written != bytes) return false;
+            if (!ok) return false;
             continue;
         }
         xSemaphoreGive(tx_lock_);
@@ -378,8 +402,8 @@ void AudioOutput::tts_end() {
         ESP_ERROR_CHECK(i2s_channel_disable(tx_));
         tx_enabled_ = false;
     }
-    xSemaphoreGive(tx_lock_);
     xStreamBufferReset(tts_buf_);
+    xSemaphoreGive(tx_lock_);
 }
 
 void AudioOutput::on_stream_start() {
@@ -388,6 +412,7 @@ void AudioOutput::on_stream_start() {
     frames_ = 0;
     portEXIT_CRITICAL(&progress_lock_);
     xSemaphoreTake(tx_lock_, portMAX_DELAY);
+    music_write_at_.store(0);
     tx_enable_locked();
     active_.store(true);
     xSemaphoreGive(tx_lock_);
@@ -407,25 +432,31 @@ void AudioOutput::on_stream_end() {
 }
 
 size_t AudioOutput::on_audio_write(uint8_t* data, size_t length, uint32_t timeout_ms) {
-    if (!active_.load()) return 0;
+    xSemaphoreTake(tx_lock_, portMAX_DELAY);
+    if (!active_.load()) {
+        xSemaphoreGive(tx_lock_);
+        return 0;
+    }
     const size_t bytes = std::min(length, sizeof(scratch_)) & ~size_t{3};
     int gain = muted_.load() ? 0 : volume_.load();
     const bool tts = tts_running_.load();
     if (assist_ && assist_->command_active()) gain = 0;
-    else if (tts) gain /= 5;
     for (size_t i = 0; i < bytes / 2; ++i) {
         int16_t sample;
         memcpy(&sample, data + i * 2, sizeof(sample));
-        scratch_[i] = static_cast<int16_t>(static_cast<int32_t>(sample) * gain / 100);
+        scratch_[i] = audio_mix::music_sample(sample, gain, tts);
     }
     if (tts) {
         const size_t got = xStreamBufferReceive(tts_buf_, mix_scratch_, bytes, 0) / 2;
         for (size_t i = 0; i < got; ++i)
-            scratch_[i] = static_cast<int16_t>(std::clamp<int32_t>(
-                static_cast<int32_t>(scratch_[i]) + mix_scratch_[i], -32768, 32767));
+            scratch_[i] = audio_mix::add(scratch_[i], mix_scratch_[i]);
     }
     size_t written = 0;
     const esp_err_t err = i2s_channel_write(tx_, scratch_, bytes, &written, timeout_ms);
+    if (written) {
+        music_write_at_.store(esp_timer_get_time());
+    }
+    xSemaphoreGive(tx_lock_);
     // Analyze only accepted source frames, once, including partial-write retries.
     // Volume/mute still do not change the music display. One stereo pass collects
     // all four levels instead of separate peak and left-channel band passes.

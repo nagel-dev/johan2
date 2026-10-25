@@ -37,8 +37,15 @@ private:
     void cancel_command(bool stop_playback);
     void publish_state(const char* state, bool force = false);
     void request_listening_cue(bool ending = false);
+    void report_local_announcement(const std::string& token, const char* state);
+    void finish_local_announcement(bool success);
+    void cancel_local_announcement();
     TtsPlayer tts_;
     bool direct_playing_{false};
+    bool direct_timed_out_{false};
+    std::string local_announcement_url_, local_announcement_token_;
+    int64_t local_announcement_deadline_{0};
+    bool local_announcement_playing_{false}, local_announcement_cancelled_{false};
     ListeningCueGate cue_;
     std::string deferred_reply_;
     QueueHandle_t audio_queue_{nullptr};

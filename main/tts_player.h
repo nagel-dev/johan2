@@ -26,9 +26,9 @@ private:
     static void task(void* context);
     Result play();
     Result play_listening_cue();
-    void feed_samples(const uint8_t* data, size_t length);
-    void emit(int32_t left, int32_t right);
-    void flush();
+    bool feed_samples(const uint8_t* data, size_t length);
+    bool emit(int32_t left, int32_t right);
+    bool flush();
     AudioOutput* audio_{nullptr};
     TaskHandle_t task_{nullptr};
     std::atomic<bool> busy_{false};

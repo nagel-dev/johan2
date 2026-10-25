@@ -26,19 +26,22 @@ public:
     // Direct reply playback (called from the TTS task): 48 kHz, stereo, 16-bit frames.
     // Mixed over music when Sendspin is streaming; otherwise written straight to I2S.
     bool tts_begin();
-    void tts_write(const int16_t* frames, size_t frame_count);
+    bool tts_write(const int16_t* frames, size_t frame_count, const std::atomic<bool>& cancel);
     bool tts_drain(uint32_t timeout_ms);
     void tts_end();
 private:
     static constexpr size_t TTS_BUFFER_BYTES = 32768;
     void tx_enable_locked();
+    bool music_writer_recent() const;
+    bool write_tts_locked(const void* data, size_t bytes);
     SemaphoreHandle_t tx_lock_{nullptr};
     StreamBufferHandle_t tts_buf_{nullptr};
     StaticStreamBuffer_t tts_control_{}; // Control stays in internal RAM; audio storage uses PSRAM.
     std::atomic<bool> tts_running_{false};
     bool tx_enabled_{false};
+    std::atomic<int64_t> music_write_at_{0}; // Actual PCM writes, not merely a stream-start flag.
     int16_t tts_scratch_[1024]{}; // TTS task only
-    int16_t mix_scratch_[1024]{}; // Sendspin writer only
+    int16_t mix_scratch_[1024]{}; // Protected by tx_lock_.
     // Restore the working 30 ms hardware queue (6 x 240 frames at 48 kHz).
     static constexpr size_t DMA_DESCRIPTORS = 6;
     static constexpr size_t DMA_FRAMES = 240;

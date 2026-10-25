@@ -66,8 +66,10 @@ menu "Johan2 Player Configuration"
         bool "Play spoken replies directly on this device"
         default y
         help
-            Fetch the HA TTS WAV and play it through the DAC, mixed over music.
-            Non-WAV replies fall back to the reply media_player, if set.
+            Fetch HA TTS MP3/WAV and play it through the DAC, mixed over music.
+            Also enables automatic announcements from the HA local announcement
+            bridge. Unsupported voice replies fall back to the reply media_player,
+            if set; automatic announcements report errors instead of stopping music.
     config JOHAN2_TTS_VOLUME
         int "Direct reply volume (percent)"
         range 0 100

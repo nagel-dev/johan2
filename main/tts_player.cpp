@@ -1,4 +1,5 @@
 #include "tts_player.h"
+#include "tts_http.h"
 #include <algorithm>
 #include <cstring>
 #include "audio_output.h"
@@ -60,7 +61,7 @@ TtsPlayer::Result TtsPlayer::play_listening_cue() {
     if (!cancel_.load() && audio_->tts_begin()) {
         for (size_t offset = 0; offset < ListeningCuePcm::kFrames && !cancel_.load();) {
             const size_t frames = ListeningCuePcm::render(out_, offset, 512, cue_ending_);
-            audio_->tts_write(out_, frames);
+            if (!audio_->tts_write(out_, frames, cancel_)) break;
             offset += frames;
         }
         // A short cue fits in the music mix buffer. Let it reach the DAC before
@@ -72,19 +73,20 @@ TtsPlayer::Result TtsPlayer::play_listening_cue() {
     return CueDone;
 }
 
-void TtsPlayer::flush() {
-    if (out_len_) audio_->tts_write(out_, out_len_ / 2);
+bool TtsPlayer::flush() {
+    const bool ok = !out_len_ || audio_->tts_write(out_, out_len_ / 2, cancel_);
     out_len_ = 0;
+    return ok;
 }
 
-void TtsPlayer::emit(int32_t left, int32_t right) {
+bool TtsPlayer::emit(int32_t left, int32_t right) {
     out_[out_len_++] = static_cast<int16_t>(left);
     out_[out_len_++] = static_cast<int16_t>(right);
-    if (out_len_ >= sizeof(out_) / sizeof(out_[0])) flush();
+    return out_len_ < sizeof(out_) / sizeof(out_[0]) || flush();
 }
 
 // Linear-interpolating resampler from the WAV rate to 48 kHz stereo.
-void TtsPlayer::feed_samples(const uint8_t* data, size_t length) {
+bool TtsPlayer::feed_samples(const uint8_t* data, size_t length) {
     const size_t frame_bytes = channels_ * 2;
     while (length) {
         const uint8_t* frame = data;
@@ -94,7 +96,7 @@ void TtsPlayer::feed_samples(const uint8_t* data, size_t length) {
             carry_len_ += take;
             data += take;
             length -= take;
-            if (carry_len_ < frame_bytes) return;
+            if (carry_len_ < frame_bytes) return true;
             frame = carry_;
             carry_len_ = 0;
         } else {
@@ -109,14 +111,16 @@ void TtsPlayer::feed_samples(const uint8_t* data, size_t length) {
             have_prev_ = true;
         }
         while (frac_ < 65536) {
-            emit(prev_l_ + static_cast<int32_t>((static_cast<int64_t>(left - prev_l_) * frac_) >> 16),
-                 prev_r_ + static_cast<int32_t>((static_cast<int64_t>(right - prev_r_) * frac_) >> 16));
+            if (!emit(prev_l_ + static_cast<int32_t>((static_cast<int64_t>(left - prev_l_) * frac_) >> 16),
+                      prev_r_ + static_cast<int32_t>((static_cast<int64_t>(right - prev_r_) * frac_) >> 16)))
+                return false;
             frac_ += step_;
         }
         frac_ -= 65536;
         prev_l_ = left;
         prev_r_ = right;
     }
+    return true;
 }
 
 // Feeds compressed bytes to the decoder and plays whatever PCM it produces.
@@ -136,13 +140,22 @@ bool TtsPlayer::decode(uint8_t* data, size_t length) {
             decoded_capacity_ = out.needed_size;
             continue;
         }
-        if (err != ESP_AUDIO_ERR_OK) return false;
+        if (err != ESP_AUDIO_ERR_OK) {
+            ESP_LOGW(TAG, "Audio decoder failed: %d (%u input bytes)", static_cast<int>(err),
+                     static_cast<unsigned>(raw.len));
+            return false;
+        }
         if (out.decoded_size) {
             if (!info_ready_) {
                 esp_audio_simple_dec_info_t info{};
-                if (esp_audio_simple_dec_get_info(decoder_, &info) != ESP_AUDIO_ERR_OK || info.bits_per_sample != 16 ||
-                    info.channel < 1 || info.channel > 2 || info.sample_rate < 8000 || info.sample_rate > OUTPUT_RATE)
+                const auto info_err = esp_audio_simple_dec_get_info(decoder_, &info);
+                if (info_err != ESP_AUDIO_ERR_OK || info.bits_per_sample != 16 ||
+                    info.channel < 1 || info.channel > 2 || info.sample_rate < 8000 || info.sample_rate > OUTPUT_RATE) {
+                    ESP_LOGW(TAG, "Unsupported decoded audio: error %d, %u Hz, %u channels, %u bits",
+                             static_cast<int>(info_err), static_cast<unsigned>(info.sample_rate),
+                             static_cast<unsigned>(info.channel), static_cast<unsigned>(info.bits_per_sample));
                     return false;
+                }
                 channels_ = info.channel;
                 rate_ = info.sample_rate;
                 step_ = static_cast<uint32_t>((static_cast<uint64_t>(rate_) << 16) / OUTPUT_RATE);
@@ -150,7 +163,7 @@ bool TtsPlayer::decode(uint8_t* data, size_t length) {
                 started_ = true;
                 audio_->tts_begin();
             }
-            feed_samples(decoded_, out.decoded_size);
+            if (!feed_samples(decoded_, out.decoded_size)) return false;
         }
         raw.buffer += raw.consumed;
         raw.len -= raw.consumed;
@@ -175,8 +188,8 @@ TtsPlayer::Result TtsPlayer::play() {
     auto client = esp_http_client_init(&config);
     if (!client) return Failed;
     Result result = Failed;
-    if (esp_http_client_open(client, 0) == ESP_OK) {
-        esp_http_client_fetch_headers(client);
+    const esp_err_t opened = open_tts_response(client, cancel_);
+    if (opened == ESP_OK) {
         const int status = esp_http_client_get_status_code(client);
         if (status != 200) {
             ESP_LOGW(TAG, "Reply fetch returned HTTP %d", status);
@@ -207,7 +220,12 @@ TtsPlayer::Result TtsPlayer::play() {
                         ok = false;
                         break;
                     }
-                    if (esp_audio_simple_dec_open(&cfg, &decoder_) != ESP_AUDIO_ERR_OK) { ok = false; break; }
+                    const auto decoder_err = esp_audio_simple_dec_open(&cfg, &decoder_);
+                    if (decoder_err != ESP_AUDIO_ERR_OK) {
+                        ESP_LOGW(TAG, "Could not open audio decoder: %d", static_cast<int>(decoder_err));
+                        ok = false;
+                        break;
+                    }
                 }
                 if (!decode(buffer, sniffed)) { ok = false; break; }
                 sniffed = 0;
@@ -215,8 +233,7 @@ TtsPlayer::Result TtsPlayer::play() {
             if (cancelled) {
                 result = Ok;
             } else if (ok && started_) {
-                flush();
-                result = Ok;
+                result = flush() ? Ok : Failed;
             } else if (!started_) {
                 ESP_LOGW(TAG, "Reply could not be decoded (need 16-bit MP3/WAV at 8-48 kHz); use the reply player fallback");
                 result = Unsupported;
@@ -225,9 +242,16 @@ TtsPlayer::Result TtsPlayer::play() {
             }
         }
     } else {
-        ESP_LOGW(TAG, "Reply fetch failed to connect");
+        ESP_LOGW(TAG, "Reply fetch failed: %s", esp_err_to_name(opened));
     }
-    if (started_) audio_->tts_end();
+    if (cancel_.load()) result = Ok;
+    if (started_) {
+        if (!cancel_.load() && !audio_->tts_drain(1000)) {
+            ESP_LOGW(TAG, "Reply audio mix did not drain");
+            result = Failed;
+        }
+        audio_->tts_end();
+    }
     cancel_.store(false);
     if (decoder_) esp_audio_simple_dec_close(decoder_);
     decoder_ = nullptr;
