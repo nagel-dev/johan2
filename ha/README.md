@@ -72,3 +72,121 @@ Controleer op hardware: (1) Hey Jarvis zet HomeDash op luisteren; (2) na het ein
 van de spraak verdwijnt luisteren; (3) de remote start luisteren zonder wake word;
 (4) annuleren keert terug naar idle en de volgende gesproken wake werkt weer.
 Scripts/knoppen kunnen als doel van de bestaande remote-automatisering dienen.
+
+## Douchetimer
+
+Installeer `shower_timer.yaml` als `/config/packages/shower_timer.yaml`, naast
+HomeDash's bestaande `announce.yaml` en `voice_failover.yaml`. Het pakket gebruikt
+`timer.douchetimer`, `script.announce` en `input_select.voice_device`; de firmware
+hoeft niet te worden aangepast. Getest met HA 2026.9.3; de herstelafhandeling
+gebruikt het timerattribuut `last_transition` uit HA 2026.9 en nieuwer.
+Voer de HA-configuratiecontrole uit en herstart HA om de nieuwe helper te laden.
+
+De bestaande UI-helper `timer.douchetimer` heeft al tien minuten als standaard
+en **Herstellen** ingeschakeld. Laat deze bestaan en definieer hem niet nogmaals
+in YAML. Alleen bij een nieuwe installatie zonder deze helper kan dit onderaan
+het pakket worden toegevoegd:
+
+```yaml
+timer:
+  douchetimer:
+    name: Douchetimer
+    icon: mdi:shower-head
+    duration: "00:10:00"
+    restore: true
+```
+
+Zeg na Hey Jarvis bijvoorbeeld:
+
+- "Start de douchetimer" of "Ik ga douchen": altijd tien minuten, ook na een
+  eerdere timer met een andere duur.
+- "Zet de douchetimer op 8 minuten" of "Stel de douche timer in op acht minuten":
+  een heel aantal van 1 tot en met 60 minuten, als cijfers of Nederlandse woorden.
+- "Stop de douchetimer": annuleren zonder eindmelding.
+- "Hoeveel tijd heeft de douchetimer nog?" of "Hoe lang heb ik nog om te douchen?":
+  resterende tijd, gepauzeerd of geen actieve timer.
+
+De zinnen zijn conversation-triggers en geven een eigen Assist-antwoord. HA
+2026.9.3 behandelt een passende zin vóór de geselecteerde OpenAI-agent; hiervoor
+hoeft `prefer_local_intents` niet aan. Vrije formuleringen en sommige
+vervolggesprekken kunnen wel bij de AI-agent uitkomen. Maak daarom via
+Instellingen -> Spraakassistenten -> Blootstellen ook expliciet deze twee
+scripts beschikbaar voor **Assist**:
+
+- `script.shower_timer_start` (Douchetimer - starten)
+- `script.shower_timer_cancel` (Douchetimer - stoppen)
+
+Laat `timer.douchetimer` ook zichtbaar voor Assist. Schakel niet automatisch alle
+nieuwe entiteiten in. De OpenAI-conversatieagent moet de bestaande **Assist**-API
+gebruiken. De scriptvelden geven de AI de optionele parameter `minutes` (1-60,
+standaard 10). Het beschreven intent `Johan2ShowerTimerStatus` levert automatisch
+een alleen-lezen AI-tool voor de echte resterende tijd. De omschrijvingen maken
+duidelijk dat deze HA-helper werkt wanneer native timers op het spraakapparaat
+niet worden ondersteund. Alleen de timer zichtbaar maken is onvoldoende om de
+startactie aan de AI beschikbaar te stellen.
+
+Een dashboard/automatisering kan dezelfde `script.shower_timer_start` aanroepen
+met optioneel `minutes: 8`, of `script.shower_timer_cancel`. Ongeldige waarden
+laten het startscript met een fout stoppen, zodat een AI-toolaanroep geen
+geslaagde start kan melden na een stil overgeslagen validatie.
+
+Tijdens het aftellen volgt één bericht bij vijf minuten resterend en één bij
+één minuut. Daarna: "Je douchetijd is voorbij." De berichten gebruiken
+`script.announce` met `target: owner`: Johan2 wanneer die de actieve stem bezit,
+anders HomeDash volgens de bestaande failover. Ze negeren stilletijden omdat de
+timer expliciet is gestart. Het pakket verandert het volume niet.
+
+Een start met hoogstens vijf minuten slaat het vijfminutenbericht over; een start
+met hoogstens één minuut slaat beide herinneringen over. Starten, hervatten of
+een wijziging via `timer.change` berekent de drempels opnieuw vanaf de actuele
+eindtijd. Pauzeren via HA onderbreekt herinneringen. Annuleren wist de planning.
+De kleine `input_text.shower_timer_checkpoint` bewaart planning en verzonden
+drempels bij herstart; verander deze helper niet handmatig tijdens gebruik.
+Als de timer tijdens HA-uitval afloopt, volgt de eindmelding na het opstarten.
+Er wordt geen oude eindmelding afgespeeld bij de eerste installatie zonder
+bijbehorend checkpoint. Een lange vertraging geeft alleen de nog relevante
+herinnering en geen reeks achterstallige berichten.
+
+### Controleren
+
+Lokale template-/grammaticatests (vereist PyYAML, Jinja2 en hassil):
+
+```bash
+python3 tests/shower_timer_test.py
+```
+
+Controleer op HA: starten zonder/met duur en de bevestiging, status, annuleren,
+en een start zonder duur na een afwijkende duur. Test met `timer.start` en
+`duration: 65` het éénminutenbericht en einde; gebruik `duration: 305` voor het
+vijfminutenbericht. Een start van 30 seconden geeft alleen een eindmelding.
+Controleer ook pauze/hervatten, een gewijzigde eindtijd, herladen/herstarten
+tijdens aftellen en afloop tijdens HA-uitval.
+
+De lokale tests vervangen de HA-configuratiecontrole en fysieke luistertest
+niet. Controleer afzonderlijk verstaanbare spraak op Johan2, hervatten van muziek,
+en HomeDash als actieve eigenaar na failover.
+
+Op 2026-10-25 is het pakket op de bestaande HA 2026.9.3 geïnstalleerd en de
+volledige configuratiecontrole geslaagd. Tekstinvoer door de geselecteerde
+OpenAI Assist-pipeline bevestigde de lokale start-/duur-/status-/stopantwoorden
+en de terugkeer naar tien minuten na een afwijkende duur. Versnelde timers
+bereikten beide herinneringen en de eindmelding via `script.announce`, met
+Johan2 als eigenaar. Annuleren gaf geen eindmelding en einde werd niet herhaald.
+Een timer die tijdens een HA-herstart afliep gaf één eindmelding na opstarten.
+Ook de eerste start met een nog onbekend checkpoint is live gecontroleerd.
+De timer is gestopt achtergelaten; fysiek horen en HomeDash-failover zijn nog
+niet afzonderlijk getest.
+
+Na een gemelde gesproken weigering is op dezelfde dag ook de echte AI-route
+hersteld en getest. De start- en stopscripts waren nog niet aan Assist
+blootgesteld. Beide zijn nu ingeschakeld; de AI gebruikt aantoonbaar de
+start-/stoptools en het statusintent, ook binnen één gesprek en bij vrije
+formuleringen. Rechtstreeks "start de douchetimer" aan de AI geven startte
+daarna een echte timer van tien minuten. Die testtimer is weer gestopt. Dit
+controleert de AI-acties; de herkende tekst van de eerdere mislukte
+microfoonopdracht was niet beschikbaar en fysiek opnieuw inspreken blijft
+een afzonderlijke controle.
+
+Bronnen:
+- https://www.home-assistant.io/integrations/timer/
+- https://www.home-assistant.io/voice_control/custom_sentences/

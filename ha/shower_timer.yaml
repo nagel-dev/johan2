@@ -1,0 +1,216 @@
+# Install as /config/packages/shower_timer.yaml alongside HomeDash's announce.yaml.
+# Reuses timer.douchetimer (10 minutes, restore enabled); do not define it twice.
+# Requires HA 2026.9+ for the timer's restored last_transition attribute.
+input_text:
+  shower_timer_checkpoint:
+    name: Douchetimer reminder checkpoint
+    max: 255
+    # No initial value: retain deadline/reminder flags across HA restarts.
+
+script:
+  shower_timer_start:
+    alias: Douchetimer - starten
+    description: >-
+      Start or restart the persistent Home Assistant shower timer (douchetimer,
+      douche timer, shower timer) timer.douchetimer. Optional minutes is a whole
+      number from 1 to 60; omit it for ten minutes. Use this action for shower
+      timers even when native voice-device timers are unsupported: this HA
+      helper works on Johan2 and HomeDash and announces reminders and completion.
+    mode: single
+    fields:
+      minutes:
+        name: Minuten
+        description: Hele minuten (1-60); zonder waarde tien minuten.
+        default: 10
+        selector:
+          number:
+            min: 1
+            max: 60
+            step: 1
+            mode: box
+    sequence:
+      - if: >-
+          {{ not (1 <= (minutes | default(10) | float(0)) <= 60
+             and (minutes | default(10) | float(0)) == (minutes | default(10) | int(0))) }}
+        then:
+          - stop: Kies een heel aantal minuten tussen één en zestig.
+            error: true
+      - action: timer.start
+        target:
+          entity_id: timer.douchetimer
+        data:
+          duration: "{{ (minutes | default(10) | int) * 60 }}"
+  shower_timer_cancel:
+    alias: Douchetimer - stoppen
+    description: >-
+      Stop/cancel the persistent Home Assistant shower timer (douchetimer,
+      douche timer, shower timer) timer.douchetimer without a completion message.
+      Works on Johan2/HomeDash even when native voice-device timers are unsupported.
+    mode: single
+    sequence:
+      - action: timer.cancel
+        target:
+          entity_id: timer.douchetimer
+
+automation:
+  - id: shower_timer_voice
+    alias: Douchetimer - Assist
+    mode: queued
+    max: 5
+    triggers:
+      - trigger: conversation
+        id: start
+        command:
+          - "(start|begin) [de] (douchetimer|douche timer)"
+          - "[ik] ga douchen"
+      - trigger: conversation
+        id: duration
+        command:
+          - "(zet|start|stel) [de] (douchetimer|douche timer) [in] (op|voor) {minutes} (minuut|minuten)"
+      - trigger: conversation
+        id: cancel
+        command:
+          - "(stop|annuleer) [de] (douchetimer|douche timer)"
+      - trigger: conversation
+        id: status
+        command:
+          - "hoeveel tijd heeft [de] (douchetimer|douche timer) nog"
+          - "hoe (lang|veel tijd) (heb ik|is er) nog om te douchen"
+          - "(wat is de status van|hoe staat) [de] (douchetimer|douche timer)"
+    actions:
+      - choose:
+          - conditions: "{{ not has_value('timer.douchetimer') }}"
+            sequence:
+              - set_conversation_response: "De douchetimer is momenteel niet beschikbaar."
+          - conditions: "{{ trigger.id in ['start', 'duration'] }}"
+            sequence:
+              - variables:
+                  requested_minutes: >-
+                    {% set raw = trigger.slots.get('minutes', '10') | string | lower | trim
+                        | replace('é', 'e') | replace('ë', 'e') | replace(' ', '') %}
+                    {% set small = ['nul', 'een', 'twee', 'drie', 'vier', 'vijf', 'zes', 'zeven',
+                        'acht', 'negen', 'tien', 'elf', 'twaalf', 'dertien', 'veertien', 'vijftien',
+                        'zestien', 'zeventien', 'achttien', 'negentien'] %}
+                    {% set tens = {'twintig': 20, 'dertig': 30, 'veertig': 40, 'vijftig': 50, 'zestig': 60} %}
+                    {% set n = namespace(value=raw | int(0)) %}
+                    {% if raw in small %}{% set n.value = small.index(raw) %}
+                    {% elif raw in tens %}{% set n.value = tens[raw] %}
+                    {% else %}
+                      {% for word, value in tens.items() %}
+                        {% for unit in range(1, 10) %}
+                          {% if raw == small[unit] ~ 'en' ~ word %}{% set n.value = value + unit %}{% endif %}
+                        {% endfor %}
+                      {% endfor %}
+                    {% endif %}
+                    {{ n.value if raw in small or raw in tens or n.value != (raw | int(0))
+                        or raw == (n.value | string) else 0 }}
+              - if: "{{ 1 <= (requested_minutes | int) <= 60 }}"
+                then:
+                  - action: script.shower_timer_start
+                    data:
+                      minutes: "{{ requested_minutes }}"
+                  - set_conversation_response: >-
+                      De douchetimer is gestart voor {{ requested_minutes }}
+                      {{ 'minuut' if requested_minutes | int == 1 else 'minuten' }}.
+                else:
+                  - set_conversation_response: "Kies een heel aantal minuten tussen één en zestig."
+          - conditions: "{{ trigger.id == 'cancel' }}"
+            sequence:
+              - action: script.shower_timer_cancel
+              - set_conversation_response: "De douchetimer is gestopt."
+        default:
+          - set_conversation_response: &shower_timer_status_text >-
+              {% if is_state('timer.douchetimer', 'active') %}
+                {% set seconds = [0, (as_timestamp(state_attr('timer.douchetimer', 'finishes_at'), 0)
+                    - as_timestamp(now())) | round(0, 'ceil') | int] | max %}
+                Je hebt nog {{ seconds // 60 }} minuten en {{ seconds % 60 }} seconden douchetijd.
+              {% elif is_state('timer.douchetimer', 'paused') %}
+                De douchetimer is gepauzeerd met nog {{ state_attr('timer.douchetimer', 'remaining') }}.
+              {% else %}
+                Er loopt geen douchetimer.
+              {% endif %}
+
+  - id: shower_timer_reminders
+    alias: Douchetimer - herinneringen en einde
+    # Reconcile current state rather than retaining a ten-minute delay. A queued
+    # run reads the latest helper state in actions, so it cannot replay old flags.
+    mode: queued
+    max: 5
+    max_exceeded: silent
+    triggers:
+      - trigger: state
+        entity_id: timer.douchetimer
+      - trigger: homeassistant
+        event: start
+      - trigger: time_pattern
+        seconds: "/1"
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ not is_state('input_text.shower_timer_checkpoint', 'unavailable')
+             and states('timer.douchetimer') in ['active', 'paused', 'idle']
+             and (not is_state('timer.douchetimer', 'idle') or
+               (states('input_text.shower_timer_checkpoint') | from_json({})).get('state') in ['active', 'paused']) }}
+    actions:
+      - variables:
+          checkpoint: "{{ states('input_text.shower_timer_checkpoint') | from_json({}) }}"
+          timer_state: "{{ states('timer.douchetimer') }}"
+          deadline: "{{ as_timestamp(state_attr('timer.douchetimer', 'finishes_at'), 0) | int }}"
+          remaining: "{{ deadline - as_timestamp(now()) }}"
+      - variables:
+          outcome: >-
+            {% set n = namespace(state=timer_state, end=deadline, five=checkpoint.get('five', true),
+                one=checkpoint.get('one', true), message='') %}
+            {% if timer_state == 'active' %}
+              {% if checkpoint.get('state') != 'active' or checkpoint.get('end') != deadline %}
+                {# New start/resume/duration: skip thresholds already reached. #}
+                {% set n.five = remaining <= 300 %}
+                {% set n.one = remaining <= 60 %}
+              {% elif 0 < remaining <= 60 and not n.one %}
+                {% set n.five = true %}{% set n.one = true %}
+                {% set n.message = 'Nog één minuut douchetijd.' %}
+              {% elif 60 < remaining <= 300 and not n.five %}
+                {% set n.five = true %}
+                {% set n.message = 'Je hebt nog vijf minuten douchetijd.' %}
+              {% endif %}
+            {% elif timer_state == 'idle' %}
+              {# last_transition is restored too: expiry during downtime is not cancellation. #}
+              {% if checkpoint.get('state') in ['active', 'paused']
+                    and state_attr('timer.douchetimer', 'last_transition') == 'finished' %}
+                {% set n.message = 'Je douchetijd is voorbij.' %}
+              {% endif %}
+              {% set n.five = true %}{% set n.one = true %}
+            {% endif %}
+            {{ {'checkpoint': {'state': n.state, 'end': n.end, 'five': n.five, 'one': n.one},
+                'message': n.message} }}
+      - if: "{{ outcome.checkpoint != checkpoint }}"
+        then:
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.shower_timer_checkpoint
+            data:
+              value: "{{ outcome.checkpoint | to_json }}"
+      - if: "{{ outcome.message | length > 0 }}"
+        then:
+          # Save flags before enqueueing speech; TTS must not block timer tracking.
+          - action: script.turn_on
+            target:
+              entity_id: script.announce
+            data:
+              variables:
+                target: owner
+                message: "{{ outcome.message }}"
+                ignore_quiet_hours: true
+
+# A described intent is also offered as a read-only tool to the Assist LLM.
+# Start/cancel are exposed script tools with their normal minutes field schema.
+intent_script:
+  Johan2ShowerTimerStatus:
+    description: >-
+      Read the actual remaining time and active/paused/idle state of the persistent
+      Home Assistant shower timer (douchetimer, douche timer, shower timer)
+      timer.douchetimer. Takes no arguments. This helper works on Johan2/HomeDash
+      even when native voice-device timers are unsupported. Use this tool before
+      reporting shower time; do not infer time from earlier conversation messages.
+    speech:
+      text: *shower_timer_status_text
