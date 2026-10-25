@@ -65,6 +65,14 @@ menu "Johan2 Player Configuration"
         int "Direct reply volume (percent)"
         range 0 100
         default 70
+    config JOHAN2_LISTENING_CUE
+        bool "Play short beeps when command listening starts and ends"
+        default y
+        help
+            Plays a high local 80 ms cue after the wake word, remote start or a
+            follow-up, and a lower cue when command capture ends. Uses the
+            direct reply volume. Microphone streaming is
+            held during the cue and briefly afterward to keep it out of STT.
     config JOHAN2_WAKE_VAD
         bool "Gate idle wake-word audio with local WebRTC speech detection"
         default y

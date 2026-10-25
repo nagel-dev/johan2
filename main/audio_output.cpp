@@ -340,6 +340,29 @@ void AudioOutput::tts_write(const int16_t* frames, size_t frame_count) {
     }
 }
 
+bool AudioOutput::tts_drain(uint32_t timeout_ms) {
+    const int64_t deadline = esp_timer_get_time() + int64_t(timeout_ms) * 1000;
+    while (xStreamBufferBytesAvailable(tts_buf_)) {
+        if (esp_timer_get_time() >= deadline) return false;
+        xSemaphoreTake(tx_lock_, portMAX_DELAY);
+        if (!active_.load()) {
+            // If music stopped mid-cue, its mixer no longer consumes the tail.
+            // This is the same single TTS producer task; the samples are scaled.
+            const size_t bytes = xStreamBufferReceive(tts_buf_, tts_scratch_, sizeof(tts_scratch_), 0);
+            size_t written = 0;
+            const esp_err_t err = i2s_channel_write(tx_, tts_scratch_, bytes, &written, 100);
+            xSemaphoreGive(tx_lock_);
+            if (err != ESP_OK || written != bytes) return false;
+            continue;
+        }
+        xSemaphoreGive(tx_lock_);
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    // Samples already copied to DMA still need up to one hardware queue to play.
+    vTaskDelay(pdMS_TO_TICKS(35));
+    return true;
+}
+
 void AudioOutput::tts_end() {
     static const int16_t silence[DMA_FRAMES * CHANNELS]{};
     xSemaphoreTake(tx_lock_, portMAX_DELAY);

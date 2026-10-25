@@ -14,7 +14,18 @@
 #include "sdkconfig.h"
 
 static const char* TAG = "assist";
-static constexpr bool kDirectReplies = CONFIG_JOHAN2_TTS_DIRECT;
+static constexpr bool kDirectReplies =
+#ifdef CONFIG_JOHAN2_TTS_DIRECT
+    true;
+#else
+    false;
+#endif
+static constexpr bool kListeningCue =
+#ifdef CONFIG_JOHAN2_LISTENING_CUE
+    true;
+#else
+    false;
+#endif
 static constexpr bool kStopListener =
 #ifdef CONFIG_JOHAN2_STOP_LISTENER
     true;
@@ -27,7 +38,7 @@ void AssistClient::start(AudioOutput* audio) {
         ESP_LOGI(TAG, "Assist disabled: set HA token in local sdkconfig");
         return;
     }
-#if CONFIG_JOHAN2_TTS_DIRECT
+#if CONFIG_JOHAN2_TTS_DIRECT || CONFIG_JOHAN2_LISTENING_CUE
     if (audio) tts_.init(*audio);
 #endif
     if (!kDirectReplies && !strlen(CONFIG_JOHAN2_HA_REPLY_PLAYER)) {
@@ -153,7 +164,10 @@ void AssistClient::cancel_command(bool stop_playback) {
     publish_state("idle");
 }
 
-void AssistClient::reset_audio() {
+void AssistClient::reset_audio(bool preserve_end_cue) {
+    cue_.cancel(preserve_end_cue);
+    if (cue_.playing && (!preserve_end_cue || !cue_.playing_end)) tts_.cancel();
+    if (!preserve_end_cue) deferred_reply_.clear();
 #if CONFIG_JOHAN2_WAKE_VAD
     if (wake_gating_ && wake_gate_.seen_frames)
         ESP_LOGI(TAG, "Wake VAD: sent %" PRIu32 "/%" PRIu32 " frames", wake_gate_.sent_frames, wake_gate_.seen_frames);
@@ -162,6 +176,13 @@ void AssistClient::reset_audio() {
 #endif
     accepting_.store(false);
     command_active_.store(false);
+    xQueueReset(audio_queue_);
+}
+
+void AssistClient::request_listening_cue(bool ending) {
+    if (!kListeningCue || !cue_.request(protocol_.run_id, esp_timer_get_time(), wake_tail_until_, ending)) return;
+    // Mute music before scheduling playback, including the first wake event.
+    if (!ending) command_active_.store(true);
     xQueueReset(audio_queue_);
 }
 
@@ -262,6 +283,7 @@ void AssistClient::run() {
                 ESP_LOGI(TAG, "%s", message.type == WEBSOCKET_EVENT_CONNECTED ? "HA connected" : "HA disconnected");
             } else if (message.text) {
                 const bool was_streaming = protocol_.any_streaming();
+                const bool was_command_capture = protocol_.command_active && protocol_.streaming;
                 const auto result = protocol_.receive(message.text);
                 free(message.text);
                 if (protocol_.last_event() == "run-start" && !followup_ &&
@@ -322,8 +344,10 @@ void AssistClient::run() {
                 } else if (result == AssistProtocol::Event::RemoteCancel) {
                     if (protocol_.command_active || remote_start_pending_ || strcmp(assist_state_, "starting") == 0 ||
                         direct_playing_) {
+                        const bool was_listening = protocol_.command_active && protocol_.streaming;
                         ESP_LOGI(TAG, "Cancelled by button");
                         cancel_command(true);
+                        if (was_listening) request_listening_cue(true);
                     } else {
                         publish_state("idle", true);
                     }
@@ -332,15 +356,18 @@ void AssistClient::run() {
                     followup_used_ = false;
                     followup_count_ = 0;
                     wake_tail_until_ = wake_at_ + kWakeTailUs;
+                    request_listening_cue();
                     ESP_LOGI(TAG, "Wake word detected; listening for command");
                     publish_state("listening");
                 } else if (result == AssistProtocol::Event::Listening) {
+                    request_listening_cue();
                     if (!wake_at_ || strcmp(assist_state_, "starting") == 0)
                         wake_at_ = conversation_last_ = esp_timer_get_time();
                     if (followup_) followup_deadline_ = esp_timer_get_time() + kFollowupUs;
                     run_deadline_ = esp_timer_get_time() + 45000000;
                     publish_state("listening");
                 } else if (result == AssistProtocol::Event::Processing) {
+                    request_listening_cue(true);
                     run_deadline_ = esp_timer_get_time() + 120000000;
                     publish_state("processing");
                 } else if (result == AssistProtocol::Event::Transcript) {
@@ -350,14 +377,17 @@ void AssistClient::run() {
                     if (is_stop_phrase(protocol_.transcript())) {
                         ESP_LOGI(TAG, "Cancelled by voice");
                         cancel_command(false);
+                        request_listening_cue(true);
                         command_active_.store(false);
                         continue;
                     }
                     if (is_stt_artifact(protocol_.transcript())) {
                         ESP_LOGW(TAG, "Ignored STT artifact");
                         cancel_command(false);
+                        request_listening_cue(true);
                         continue;
                     }
+                    request_listening_cue(true);
                     send_to_homedash("transcript", protocol_.transcript());
                 } else if (result == AssistProtocol::Event::StopTranscript) {
                     ESP_LOGI(TAG, "Heard while busy: %s", protocol_.stop_transcript().c_str());
@@ -372,9 +402,12 @@ void AssistClient::run() {
                     speech_at_ = esp_timer_get_time();
                     ESP_LOGI(TAG, "Reply audio ready %lld ms after wake word", (long long)((speech_at_ - wake_at_) / 1000));
                     send_to_homedash("response", protocol_.reply_text());
-                    reset_audio();
+                    reset_audio(true);
                     const std::string url = kDirectReplies ? protocol_.reply_url(CONFIG_JOHAN2_HA_WS_URL) : std::string{};
-                    if (!url.empty() && tts_.start(url)) {
+                    if (!url.empty() && (cue_.playing || cue_.pending)) {
+                        deferred_reply_ = url; // Finish the low end cue before starting a reply.
+                        announcement_deadline_ = esp_timer_get_time() + 90000000;
+                    } else if (!url.empty() && tts_.start(url)) {
                         direct_playing_ = true;
                         announcement_deadline_ = esp_timer_get_time() + 90000000;
                         ESP_LOGI(TAG, "Playing spoken reply on this device");
@@ -396,24 +429,25 @@ void AssistClient::run() {
                         ++followup_count_;
                         // Let the user repeat the command without the wake word.
                         followup_used_ = followup_ = remote_start_pending_ = true;
-                        reset_audio();
+                        reset_audio(result == AssistProtocol::Event::Finished);
                         retry_at_ = esp_timer_get_time() + 200000;
                         publish_state("starting");
                         ESP_LOGI(TAG, "%s; listening again without wake word",
                                  protocol_.continue_conversation ? "Agent expects an answer" : "Command unclear");
                     } else if (protocol_.unclear && was_followup) {
                         // No clear follow-up either: stay quiet and rearm the wake word.
-                        if (!direct_playing_ && !protocol_.announcement_pending) publish_state("idle");
-                        reset_audio();
+                        if (!direct_playing_ && deferred_reply_.empty() && !protocol_.announcement_pending) publish_state("idle");
+                        reset_audio(result == AssistProtocol::Event::Finished);
                         retry_at_ = std::max(retry_at_, esp_timer_get_time() + 250000);
                     } else {
-                        if (!direct_playing_ && !protocol_.announcement_pending)
+                        if (!direct_playing_ && deferred_reply_.empty() && !protocol_.announcement_pending)
                             publish_state(result == AssistProtocol::Event::Error ? "error" : "idle");
-                        reset_audio();
+                        reset_audio(result == AssistProtocol::Event::Finished);
                         retry_at_ = std::max(retry_at_, esp_timer_get_time() + (result == AssistProtocol::Event::Error ? 10000000 : 250000));
                         if (result == AssistProtocol::Event::Error) ESP_LOGW(TAG, "Assist run failed: %s", protocol_.error_code().c_str());
                         if (!protocol_.unclear) followup_used_ = false;
                     }
+                    if (was_command_capture) request_listening_cue(true);
                 }
                 const bool streaming = protocol_.any_streaming();
                 if (!was_streaming && streaming) {
@@ -454,6 +488,7 @@ void AssistClient::run() {
         if (followup_deadline_ && now >= followup_deadline_) {
             ESP_LOGI(TAG, "No follow-up speech; back to wake word");
             cancel_command(false);
+            request_listening_cue(true);
         }
         if (direct_playing_) {
             const auto result = tts_.poll();
@@ -469,6 +504,30 @@ void AssistClient::run() {
             } else if (now >= announcement_deadline_) {
                 direct_playing_ = false;
                 publish_state("error");
+            }
+        }
+        if (cue_.playing && tts_.poll() == TtsPlayer::CueDone) {
+            cue_.finished(esp_timer_get_time());
+            xQueueReset(audio_queue_);
+        }
+        if (cue_.pending && !cue_.playing) {
+            if ((!cue_.pending_end && (!protocol_.command_active || !protocol_.streaming)) || now >= cue_.wait_until) {
+                if (now >= cue_.wait_until) ESP_LOGW(TAG, "Listening cue skipped: playback task busy");
+                cue_.pending = false; // Never delay a command indefinitely for an old reply.
+            } else if (now >= cue_.not_before && !direct_playing_ && tts_.start_listening_cue(cue_.pending_end)) {
+                cue_.started();
+                ESP_LOGI(TAG, "Listening %s cue started", cue_.playing_end ? "end" : "start");
+            }
+        }
+        if (!deferred_reply_.empty() && !cue_.playing && !cue_.pending) {
+            if (tts_.start(deferred_reply_)) {
+                deferred_reply_.clear();
+                direct_playing_ = true;
+                announcement_deadline_ = now + 90000000;
+                ESP_LOGI(TAG, "Playing spoken reply after listening end cue");
+            } else if (now >= announcement_deadline_) {
+                deferred_reply_.clear();
+                forward_to_player();
             }
         }
         // Keep a short "stop" listener alive while the answer is processed or spoken.
@@ -487,7 +546,8 @@ void AssistClient::run() {
 #else
             true;
 #endif
-        if (voice_allowed && protocol_.authenticated && !protocol_.running && !protocol_.announcement_pending && !direct_playing_ && now >= retry_at_) {
+        if (voice_allowed && protocol_.authenticated && !protocol_.running && !protocol_.announcement_pending &&
+            !direct_playing_ && deferred_reply_.empty() && !cue_.blocked(now) && now >= retry_at_) {
             reset_audio();
             // A pipeline that never starts must not leave the UI on "starting" for five minutes.
             run_deadline_ = now + 10000000;
@@ -507,7 +567,8 @@ void AssistClient::run() {
         Audio block;
         for (int n = 0; n < 4 && accepting_.load() && xQueueReceive(audio_queue_, &block, 0) == pdTRUE; ++n) {
             // Keep the wake word's own tail out of STT, where VAD would take it for the command.
-            if (esp_timer_get_time() < wake_tail_until_) continue;
+            const int64_t capture_now = esp_timer_get_time();
+            if (capture_now < wake_tail_until_ || cue_.blocked(capture_now)) continue;
 #if CONFIG_JOHAN2_WAKE_VAD
             if (wake_vad_ && protocol_.gate_wake_audio()) {
                 wake_gating_ = true;

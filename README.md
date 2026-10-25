@@ -197,6 +197,22 @@ reboot. Missing token leaves the player and microphone LED test functional.
 Firmware compilation and host protocol tests do not verify physical wake-word
 recognition, LAN connectivity or playback quality.
 
+By default, command listening has short local beeps (80 ms,
+`JOHAN2_LISTENING_CUE`): 1200 Hz when listening starts and a lower 600 Hz when
+command capture ends, including cancellation and follow-up silence timeout.
+The start beep plays once after Hey Jarvis, a remote start or each follow-up,
+through the existing DAC at the direct reply volume. It waits for
+the wake-word tail to be discarded first; speak after the beep. The microphone
+stream is held during playback and for 80 ms afterward to exclude cue/echo audio.
+Background wake-word monitoring and the optional spoken-stop listener do not beep.
+The cues share the reply playback task and music mixer; they cannot overlap a direct
+reply, which waits for the end cue to finish. If an interrupted reply does not
+release that task within 300 ms of cue
+readiness, the cue is skipped so listening can continue. Disable the option in
+menuconfig to restore silent command starts/ends. During initial music-stream
+synchronization a cue can be dropped if the mixer does not consume it within
+250 ms; command handling remains bounded.
+
 Host protocol check (requires the managed ArduinoJson component):
 
 ```sh

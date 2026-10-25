@@ -10,6 +10,7 @@
 #include <string>
 #include "assist_protocol.h"
 #include "tts_player.h"
+#include "listening_cue.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -31,12 +32,15 @@ private:
     void run();
     bool send_text(const std::string& text);
     bool send_audio(const int16_t* samples, size_t count);
-    void reset_audio();
+    void reset_audio(bool preserve_end_cue = false);
     void forward_to_player();
     void cancel_command(bool stop_playback);
     void publish_state(const char* state, bool force = false);
+    void request_listening_cue(bool ending = false);
     TtsPlayer tts_;
     bool direct_playing_{false};
+    ListeningCueGate cue_;
+    std::string deferred_reply_;
     QueueHandle_t audio_queue_{nullptr};
     QueueHandle_t messages_{nullptr};
     esp_websocket_client_handle_t socket_{nullptr};

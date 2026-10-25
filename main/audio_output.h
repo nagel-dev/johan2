@@ -27,6 +27,7 @@ public:
     // Mixed over music when Sendspin is streaming; otherwise written straight to I2S.
     bool tts_begin();
     void tts_write(const int16_t* frames, size_t frame_count);
+    bool tts_drain(uint32_t timeout_ms);
     void tts_end();
 private:
     static constexpr size_t TTS_BUFFER_BYTES = 32768;

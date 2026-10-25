@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cstring>
 #include "audio_output.h"
+#include "listening_cue.h"
 #include "esp_audio_simple_dec.h"
 #include "esp_audio_simple_dec_default.h"
 #include "esp_audio_dec_default.h"
@@ -22,9 +23,23 @@ void TtsPlayer::init(AudioOutput& audio) {
 }
 
 bool TtsPlayer::start(const std::string& url) {
+    if (!task_) return false;
     bool expected = false;
     if (!busy_.compare_exchange_strong(expected, true)) return false;
     url_ = url;
+    cue_ = false;
+    result_.store(None);
+    cancel_.store(false);
+    xTaskNotifyGive(task_);
+    return true;
+}
+
+bool TtsPlayer::start_listening_cue(bool ending) {
+    if (!task_) return false;
+    bool expected = false;
+    if (!busy_.compare_exchange_strong(expected, true)) return false;
+    cue_ = true;
+    cue_ending_ = ending;
     result_.store(None);
     cancel_.store(false);
     xTaskNotifyGive(task_);
@@ -35,10 +50,26 @@ void TtsPlayer::task(void* context) {
     auto& self = *static_cast<TtsPlayer*>(context);
     while (true) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        const Result result = self.play();
+        const Result result = self.cue_ ? self.play_listening_cue() : self.play();
         self.result_.store(result);
         self.busy_.store(false);
     }
+}
+
+TtsPlayer::Result TtsPlayer::play_listening_cue() {
+    if (!cancel_.load() && audio_->tts_begin()) {
+        for (size_t offset = 0; offset < ListeningCuePcm::kFrames && !cancel_.load();) {
+            const size_t frames = ListeningCuePcm::render(out_, offset, 512, cue_ending_);
+            audio_->tts_write(out_, frames);
+            offset += frames;
+        }
+        // A short cue fits in the music mix buffer. Let it reach the DAC before
+        // tts_end() clears that buffer; bound waiting if the stream has stalled.
+        if (!cancel_.load() && !audio_->tts_drain(250)) ESP_LOGW(TAG, "Listening cue mix timed out");
+        audio_->tts_end();
+    }
+    cancel_.store(false);
+    return CueDone;
 }
 
 void TtsPlayer::flush() {
