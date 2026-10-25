@@ -1,4 +1,4 @@
-"""Exercise actual TTS cancellation and HTTP events with blocked local sockets."""
+"""Exercise actual TTS cancellation and HTTP events with blocked local TCP sockets."""
 from pathlib import Path
 import subprocess
 import tempfile
@@ -16,11 +16,29 @@ fixture = r"""
 #include <iostream>
 #include <mutex>
 #include <sys/socket.h>
+#include <netinet/in.h>
 #include <unistd.h>
 #define ESP_LOGW(...) ((void)0)
 #define ESP_ERROR_CHECK(error) assert((error) == ESP_OK)
 using esp_err_t = int;
 constexpr int ESP_OK = 0, HTTP_EVENT_ON_CONNECTED = 1, HTTP_EVENT_DISCONNECTED = 2;
+static void tcp_pair(int pair[2]) {
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    assert(listener >= 0);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
+    assert(listen(listener, 1) == 0);
+    socklen_t length = sizeof(address);
+    assert(getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length) == 0);
+    pair[1] = socket(AF_INET, SOCK_STREAM, 0);
+    assert(pair[1] >= 0);
+    assert(connect(pair[1], reinterpret_cast<sockaddr*>(&address), length) == 0);
+    pair[0] = accept(listener, nullptr, nullptr);
+    assert(pair[0] >= 0);
+    close(listener);
+}
 struct Client { int fd, timeout = 2000; };
 static int esp_http_client_get_socket(Client* client) { return client->fd; }
 static int esp_http_client_set_timeout_ms(Client* client, int timeout) {
@@ -41,7 +59,7 @@ int main() {
     TtsPlayer player;
     for (int iteration = 0; iteration < 100; ++iteration) {
         int pair[2];
-        assert(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+        tcp_pair(pair);
         Client client{pair[0]};
         esp_http_client_event_t event{HTTP_EVENT_ON_CONNECTED, &player, &client};
         player.cancel_.store(false);
@@ -63,7 +81,7 @@ int main() {
         close(pair[0]);
         close(pair[1]);
 
-        assert(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+        tcp_pair(pair);
         player.cancel(); // The old descriptor must no longer be published.
         char sent = 'x', received = 0;
         assert(send(pair[1], &sent, 1, 0) == 1);
@@ -72,7 +90,7 @@ int main() {
         close(pair[1]);
     }
     int pair[2];
-    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+    tcp_pair(pair);
     Client client{pair[0]};
     esp_http_client_event_t event{HTTP_EVENT_ON_CONNECTED, &player, &client};
     player.cancel_.store(false);

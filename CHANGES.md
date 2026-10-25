@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-10-25 (review: TCP cancellation regression)
+
+- **Test** `tests/tts_cancel_test.py` — use loopback TCP instead of Unix-domain sockets to match the device's HTTP transport and avoid an intermittent macOS Unix-socket shutdown/read failure. Retain blocked-read interruption, late connection, descriptor-lifetime and idle-cancellation coverage. Five consecutive sanitized runs passed across 500 connection lifecycles; no firmware change.
+
 ## 2026-10-25 (review: TTS initialization cleanup)
 
 - **Fix** `main/tts_player.cpp`, `tests/tts_player_test.py`, `README.md` — free and clear the decoder output buffer when HTTP-client initialization fails, and explicitly log allocation failures while permitting the configured reply-player fallback before any audio plays, so that repeated failed requests cannot leak 8 KB each or unnecessarily suppress replies. Sanitized host checks alternate 1,000 failed initializations with successful requests and verify zero outstanding output allocations, plus allocation failure, fetch failure, unsupported audio and cancellation cleanup; the ESP-IDF build passes. Physical playback remains unverified.
