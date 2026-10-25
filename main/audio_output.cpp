@@ -310,6 +310,7 @@ void AudioOutput::tx_enable_locked() {
 bool AudioOutput::tts_begin() {
     xSemaphoreTake(tx_lock_, portMAX_DELAY);
     xStreamBufferReset(tts_buf_);
+    tts_pending_bytes_ = 0;
     tts_running_.store(true);
     tx_enable_locked();
     xSemaphoreGive(tx_lock_);
@@ -321,8 +322,23 @@ bool AudioOutput::music_writer_recent() const {
     return active_.load() && last && esp_timer_get_time() - last < 100000;
 }
 
-bool AudioOutput::write_tts_locked(const void* data, size_t bytes) {
-    size_t written = 0;
+size_t AudioOutput::load_tts_locked(size_t bytes) {
+    const size_t capacity = std::min(bytes, sizeof(mix_scratch_));
+    if (tts_pending_bytes_ < capacity)
+        tts_pending_bytes_ += xStreamBufferReceive(tts_buf_,
+            reinterpret_cast<uint8_t*>(mix_scratch_) + tts_pending_bytes_, capacity - tts_pending_bytes_, 0);
+    return std::min(bytes, tts_pending_bytes_);
+}
+
+void AudioOutput::consume_tts_locked(size_t bytes) {
+    bytes = std::min(bytes, tts_pending_bytes_);
+    tts_pending_bytes_ -= bytes;
+    if (tts_pending_bytes_)
+        memmove(mix_scratch_, reinterpret_cast<uint8_t*>(mix_scratch_) + bytes, tts_pending_bytes_);
+}
+
+bool AudioOutput::write_tts_locked(const void* data, size_t bytes, size_t& written) {
+    written = 0;
     const esp_err_t err = i2s_channel_write(tx_, data, bytes, &written, 200);
     if (err == ESP_OK && written == bytes) return true;
     runtime_metrics.i2s_errors.fetch_add(1);
@@ -352,12 +368,14 @@ bool AudioOutput::tts_write(const int16_t* frames, size_t frame_count, const std
                 continue;
             } else {
                 // Stream-start does not guarantee PCM delivery. Drain older speech first.
-                const size_t pending = xStreamBufferReceive(tts_buf_, mix_scratch_, sizeof(mix_scratch_), 0);
-                const bool ok = pending ? write_tts_locked(mix_scratch_, pending) :
-                    write_tts_locked(reinterpret_cast<uint8_t*>(tts_scratch_) + sent_bytes, bytes - sent_bytes);
+                const size_t pending = load_tts_locked(sizeof(mix_scratch_));
+                size_t written = 0;
+                const bool ok = pending ? write_tts_locked(mix_scratch_, pending, written) :
+                    write_tts_locked(reinterpret_cast<uint8_t*>(tts_scratch_) + sent_bytes, bytes - sent_bytes, written);
+                if (pending) consume_tts_locked(written);
+                else sent_bytes += written;
                 xSemaphoreGive(tx_lock_);
                 if (!ok) return false;
-                if (!pending) sent_bytes = bytes;
             }
         }
         done += n;
@@ -367,22 +385,27 @@ bool AudioOutput::tts_write(const int16_t* frames, size_t frame_count, const std
 
 bool AudioOutput::tts_drain(uint32_t timeout_ms) {
     const int64_t deadline = esp_timer_get_time() + int64_t(timeout_ms) * 1000;
-    while (xStreamBufferBytesAvailable(tts_buf_)) {
-        if (esp_timer_get_time() >= deadline) return false;
+    while (true) {
+        xSemaphoreTake(tx_lock_, portMAX_DELAY);
+        const size_t bytes = load_tts_locked(sizeof(mix_scratch_));
+        if (!bytes) {
+            xSemaphoreGive(tx_lock_);
+            break;
+        }
+        if (esp_timer_get_time() >= deadline) {
+            xSemaphoreGive(tx_lock_);
+            return false;
+        }
         if (music_writer_recent()) {
+            xSemaphoreGive(tx_lock_);
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
-        xSemaphoreTake(tx_lock_, portMAX_DELAY);
-        if (!music_writer_recent()) {
-            const size_t bytes = xStreamBufferReceive(tts_buf_, mix_scratch_, sizeof(mix_scratch_), 0);
-            const bool ok = !bytes || write_tts_locked(mix_scratch_, bytes);
-            xSemaphoreGive(tx_lock_);
-            if (!ok) return false;
-            continue;
-        }
+        size_t written = 0;
+        const bool ok = write_tts_locked(mix_scratch_, bytes, written);
+        consume_tts_locked(written);
         xSemaphoreGive(tx_lock_);
-        vTaskDelay(pdMS_TO_TICKS(10));
+        if (!ok) return false;
     }
     // Samples already copied to DMA still need up to one hardware queue to play.
     vTaskDelay(pdMS_TO_TICKS(35));
@@ -405,6 +428,7 @@ void AudioOutput::tts_end() {
         tx_enabled_ = false;
     }
     xStreamBufferReset(tts_buf_);
+    tts_pending_bytes_ = 0;
     xSemaphoreGive(tx_lock_);
 }
 
@@ -449,12 +473,13 @@ size_t AudioOutput::on_audio_write(uint8_t* data, size_t length, uint32_t timeou
         scratch_[i] = audio_mix::music_sample(sample, gain, tts);
     }
     if (tts) {
-        const size_t got = xStreamBufferReceive(tts_buf_, mix_scratch_, bytes, 0) / 2;
+        const size_t got = load_tts_locked(bytes) / 2;
         for (size_t i = 0; i < got; ++i)
             scratch_[i] = audio_mix::add(scratch_[i], mix_scratch_[i]);
     }
     size_t written = 0;
     const esp_err_t err = i2s_channel_write(tx_, scratch_, bytes, &written, timeout_ms);
+    if (tts) consume_tts_locked(written);
     if (written) {
         const int64_t now = esp_timer_get_time();
         const int64_t previous = music_write_at_.exchange(now);

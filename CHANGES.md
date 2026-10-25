@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-10-25 (review: partial announcement writes)
+
+- **Fix** `main/audio_output.cpp/.h`, `tests/audio_output_test.py`, `README.md` — retain speech in the existing shared scratch buffer until I2S accepts it, top up retained tails without inserting gaps, and include them in direct fallback, drain deadlines and cancellation/reset cleanup, so that partial or zero-byte music writes cannot silently truncate announcements or acknowledge missing speech. Account for partial direct writes before propagating errors to avoid replaying their accepted prefix. Sanitized host checks exercise actual output methods across partial/zero writes, stream end, direct fallback, drain timeout, resets and music ducking; the ESP-IDF build passes. Physical listening remains unverified.
+
 ## 2026-10-25 (review: Wi-Fi reconnect race)
 
 - **Fix** `main/network.cpp`, `tests/network_retry_test.py`, `README.md` — consume reconnect requests atomically only when a connection attempt is due, and never clear a disconnect request from a stale connected-state branch, so that an asynchronous disconnect cannot permanently stop Wi-Fi recovery. Preserve connection backoff and in-flight association attempts. The deterministic regression fails on the previous implementation; host interleaving/backoff checks and the ESP-IDF build pass. Physical Wi-Fi recovery remains unverified.

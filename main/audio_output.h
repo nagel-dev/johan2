@@ -35,7 +35,9 @@ private:
     static constexpr size_t TTS_BUFFER_BYTES = 32768;
     void tx_enable_locked();
     bool music_writer_recent() const;
-    bool write_tts_locked(const void* data, size_t bytes);
+    bool write_tts_locked(const void* data, size_t bytes, size_t& written);
+    size_t load_tts_locked(size_t bytes);
+    void consume_tts_locked(size_t bytes);
     SemaphoreHandle_t tx_lock_{nullptr};
     StreamBufferHandle_t tts_buf_{nullptr};
     StaticStreamBuffer_t tts_control_{}; // Control stays in internal RAM; audio storage uses PSRAM.
@@ -44,6 +46,7 @@ private:
     std::atomic<int64_t> music_write_at_{0}; // Actual PCM writes, not merely a stream-start flag.
     int16_t tts_scratch_[1024]{}; // TTS task only
     int16_t mix_scratch_[1024]{}; // Protected by tx_lock_.
+    size_t tts_pending_bytes_{0}; // Unwritten speech retained in mix_scratch_.
     // Restore the working 30 ms hardware queue (6 x 240 frames at 48 kHz).
     static constexpr size_t DMA_DESCRIPTORS = 6;
     static constexpr size_t DMA_FRAMES = 240;

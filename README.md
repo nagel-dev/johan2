@@ -226,6 +226,8 @@ successful or retried through MA. If Sendspin temporarily stops delivering PCM,
 speech drains the queued samples in order and writes directly to I2S rather than
 waiting indefinitely for an inactive mixer. Concurrent I2S writes are serialized,
 while normal speech-buffer production does not wait on the music writer's lock.
+Partial I2S writes retain their unwritten speech tail for the next mix or direct
+drain; completion includes that tail rather than treating dequeued audio as played.
 
 The selected HA conversation agent must be allowed to see relevant entities. For
 “is de achterdeur open?”, expose the door sensor to Assist and give it a clear
@@ -277,6 +279,8 @@ c++ -std=c++17 -Wall -Wextra -Werror -I main \
 c++ -std=c++17 -Wall -Wextra -Werror -I tests/tts_stubs -I main \
   tests/tts_http_test.cpp -o /tmp/johan2-tts-http-test
 /tmp/johan2-tts-http-test
+python3 tests/audio_output_test.py
+python3 tests/network_retry_test.py
 ```
 
 Protocol reference: <https://developers.home-assistant.io/docs/voice/pipelines/>.
