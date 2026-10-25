@@ -100,7 +100,10 @@ Assistant may show a new player entry. No flash erase is needed.
 ## Implementation and limits
 
 - `main/network.cpp`: automatic Wi-Fi retry with backoff, without blocking the
-  ESP event loop; modem sleep disabled for audio.
+  ESP event loop; modem sleep disabled for audio. Connecting/reconnecting scans
+  all channels and prioritizes matching access points by signal strength rather
+  than stopping at the first match. This can take longer to connect and does not
+  add roaming while connected.
 - `main/audio_output.cpp`: Philips I2S, stereo 48 kHz / 16-bit, digital volume
   and mute, cleared DMA buffers between streams. The hardware queue is 30 ms;
   the original 2048-byte write buffer and 100 Hz RTOS tick are restored after
@@ -226,6 +229,32 @@ c++ -std=c++17 -Wall -Wextra -Werror -I main \
 ```
 
 Protocol reference: <https://developers.home-assistant.io/docs/voice/pipelines/>.
+
+### Wi-Fi signal sensor in Home Assistant
+
+Install or update HomeDash's
+[`ha/packages/johan2_assist.yaml`](https://github.com/nagel-dev/homedash/blob/main/ha/packages/johan2_assist.yaml)
+in HA's `/config/packages/` (packages enabled), check HA's configuration and restart HA.
+Enable **Report Wi-Fi RSSI to
+Home Assistant every 10 seconds** (`JOHAN2_WIFI_SENSOR`, default off) in
+`./scripts/idf.sh menuconfig`, then build and flash. It reuses the HA URL/token
+and authenticated Assist connection; no MQTT broker, admin account or HomeDash
+voice ownership is required. The HA user must be allowed to call
+`script.johan2_wifi_report`.
+
+`sensor.johan2_wifi_rssi` reports signal strength in **dBm** immediately after
+authentication and every **10 seconds** while connected. Values closer to zero
+are stronger: roughly -50 dBm is strong, -67 dBm is generally usable, and -75 dBm
+or worse is weak. Its `last_seen` attribute advances even if RSSI is unchanged.
+After 30 seconds without a report it becomes unavailable on HA's next ten-second
+expiry check; after an HA restart it waits for a fresh report. Reporting continues
+when HomeDash owns voice, but requires Johan2's HA connection to be authenticated.
+The existing serial Wi-Fi link logs still include channel and partial BSSID for
+roaming diagnosis. RSSI alone does not measure interference, packet loss or audio
+playback quality.
+
+Host template check, from the HomeDash repository:
+`python3 tests/test_johan2_wifi_sensor.py` (PyYAML and Jinja2).
 
 ### Temporary microphone recording diagnostics
 

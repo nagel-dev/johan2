@@ -67,6 +67,8 @@ bool Network::start() {
     static_assert(sizeof(CONFIG_JOHAN2_WIFI_PASSWORD) - 1 <= sizeof(config.sta.password), "Password too long");
     memcpy(config.sta.ssid, ssid, strlen(ssid));
     memcpy(config.sta.password, password, strlen(password));
+    config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
     config.sta.pmf_cfg.capable = true;
     config.sta.pmf_cfg.required = false;
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
@@ -77,13 +79,21 @@ bool Network::start() {
 }
 
 void Network::poll() {
+    const int64_t now = esp_timer_get_time();
     if (connected_.load()) {
         retry_delay_ms_ = 1000;
         retry_at_ = 0;
         retry_.store(false);
+        if (now >= link_log_at_) {
+            link_log_at_ = now + 10'000'000LL;
+            wifi_ap_record_t ap{};
+            if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+                ESP_LOGI(TAG, "Wi-Fi link: rssi=%d dBm channel=%u bssid=..:%02x:%02x",
+                         ap.rssi, ap.primary, ap.bssid[4], ap.bssid[5]);
+            }
+        }
         return;
     }
-    const int64_t now = esp_timer_get_time();
     if (retry_.load() && now >= retry_at_) {
         retry_.store(false);
         retry_at_ = now + retry_delay_ms_ * 1000LL;

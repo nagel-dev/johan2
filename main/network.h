@@ -12,5 +12,6 @@ private:
     std::atomic<bool> connected_{false};
     std::atomic<bool> retry_{false};
     int64_t retry_at_{0};
+    int64_t link_log_at_{0};
     uint32_t retry_delay_ms_{1000};
 };

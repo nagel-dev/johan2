@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
@@ -303,6 +304,7 @@ void AssistClient::run() {
                 } else if (result == AssistProtocol::Event::Ready) {
                     ESP_LOGI(TAG, "HA authenticated");
                     retry_at_ = 0;
+                    wifi_report_at_ = 0;
 #ifdef CONFIG_JOHAN2_HOMEDASH_SYNC
                     if (!send_text(protocol_.subscribe_control())) transport_failed_.store(true);
                     if (!send_text(protocol_.pipeline_update(CONFIG_JOHAN2_HA_PIPELINE))) ESP_LOGW(TAG, "Pipeline report delayed");
@@ -316,6 +318,8 @@ void AssistClient::run() {
                     return;
                 } else if (result == AssistProtocol::Event::SyncError) {
                     ESP_LOGW(TAG, "HomeDash sync rejected; check HA helpers and device permissions");
+                } else if (result == AssistProtocol::Event::WifiError) {
+                    ESP_LOGW(TAG, "Wi-Fi sensor report rejected; check script.johan2_wifi_report and HA permissions");
                 } else if (result == AssistProtocol::Event::OwnerChanged) {
                     ESP_LOGI(TAG, "Voice ownership %s", protocol_.owns_voice ? "granted" : "revoked");
                     if (!protocol_.owns_voice) cancel_command(true);
@@ -467,6 +471,18 @@ void AssistClient::run() {
             }
         }
         const int64_t now = esp_timer_get_time();
+#ifdef CONFIG_JOHAN2_WIFI_SENSOR
+        if (protocol_.authenticated && now >= wifi_report_at_) {
+            wifi_report_at_ = now + 10'000'000LL;
+            wifi_ap_record_t ap{};
+            const esp_err_t err = esp_wifi_sta_get_ap_info(&ap);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "Wi-Fi sensor read failed: %s", esp_err_to_name(err));
+            } else if (!send_text(protocol_.wifi_report(ap.rssi))) {
+                ESP_LOGW(TAG, "Wi-Fi sensor report delayed");
+            }
+        }
+#endif
 #ifdef CONFIG_JOHAN2_HOMEDASH_SYNC
         // HA helpers may finish loading after socket authentication or be reloaded.
         // Reassert the device-owned state so a missed initial update self-heals.

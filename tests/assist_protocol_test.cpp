@@ -227,5 +227,21 @@ int main() {
     assert(command["service_data"]["value"] == "same-assistant");
     owner.reset();
     assert(!owner.owns_voice && !owner.authenticated);
+    AssistProtocol wifi;
+    wifi.receive(R"({"type":"auth_ok"})");
+    wifi.begin("", true);
+    deserializeJson(command, wifi.wifi_report(-58));
+    assert(command["id"] == 2 && command["type"] == "call_service");
+    assert(command["domain"] == "script" && command["service"] == "johan2_wifi_report");
+    assert(command["service_data"]["rssi"].is<int>() && command["service_data"]["rssi"] == -58);
+    assert(wifi.run_id == 1 && wifi.running && !wifi.owns_voice);
+    assert(wifi.receive(R"({"id":2,"type":"result","success":true})") == Event::None);
+    deserializeJson(command, wifi.wifi_report(-75));
+    assert(command["id"] == 3 && command["service_data"]["rssi"] == -75);
+    assert(wifi.receive(R"({"id":3,"type":"result","success":false,"error":{"code":"not_found"}})") == Event::WifiError);
+    assert(wifi.running && wifi.authenticated); // Telemetry failure must not interrupt Assist.
+    assert(wifi.receive(R"({"id":99,"type":"result","success":false})") == Event::None);
+    wifi.reset();
+    assert(wifi.receive(R"({"id":3,"type":"result","success":false})") == Event::None);
     std::cout << "Assist protocol tests passed\n";
 }

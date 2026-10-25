@@ -40,6 +40,13 @@ menu "Johan2 Player Configuration"
         default ""
         help
             Leave blank to disable Assist. Never commit or log this credential.
+    config JOHAN2_WIFI_SENSOR
+        bool "Report Wi-Fi RSSI to Home Assistant every 10 seconds"
+        default n
+        help
+            Requires the HA token above and HomeDash's ha/packages/johan2_assist.yaml on HA.
+            Publishes sensor.johan2_wifi_rssi over the existing authenticated
+            Assist connection, including when HomeDash owns the microphone.
     config JOHAN2_HA_PIPELINE
         string "Assist pipeline ID (blank uses preferred assistant)"
         default ""

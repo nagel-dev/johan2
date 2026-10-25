@@ -67,6 +67,7 @@ private:
     const char* assist_state_{"offline"};
     int64_t state_refresh_at_{0};
     int64_t heartbeat_at_{0};
+    int64_t wifi_report_at_{0};
     int64_t wake_tail_until_{0};
     static constexpr int64_t kWakeTailUs = 600000;
     int64_t stop_retry_at_{0};

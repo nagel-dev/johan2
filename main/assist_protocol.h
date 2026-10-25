@@ -5,7 +5,7 @@
 // HA Assist wire state, kept independent of ESP-IDF so it can be tested on a host.
 class AssistProtocol {
 public:
-    enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, OwnerChanged, SyncError, Transcript, SpeechReady, StopTranscript, PlaybackAccepted, PlaybackFailed, Finished, Error, AuthInvalid };
+    enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, OwnerChanged, SyncError, WifiError, Transcript, SpeechReady, StopTranscript, PlaybackAccepted, PlaybackFailed, Finished, Error, AuthInvalid };
     bool listening_cue_enabled = true; // Follows input_boolean.johan2_listening_cue; on until HA says off.
     bool owns_voice = false; // Fail closed until HA grants this device voice ownership.
     bool authenticated = false;
@@ -37,7 +37,7 @@ public:
         stop_handler = 0;
         stop_id_ = 0;
         handler = 0;
-        control_id_ = state_id_ = heartbeat_id_ = 0;
+        control_id_ = state_id_ = heartbeat_id_ = wifi_id_ = 0;
         owns_voice = false;
         last_start_.clear();
         last_cancel_.clear();
@@ -150,6 +150,17 @@ public:
         serializeJson(doc, result);
         return result;
     }
+    std::string wifi_report(int rssi) {
+        JsonDocument doc;
+        doc["id"] = wifi_id_ = ++next_id_;
+        doc["type"] = "call_service";
+        doc["domain"] = "script";
+        doc["service"] = "johan2_wifi_report";
+        doc["service_data"]["rssi"] = rssi;
+        std::string result;
+        serializeJson(doc, result);
+        return result;
+    }
     std::string pipeline_update(const char* pipeline) {
         JsonDocument doc;
         doc["id"] = ++next_id_;
@@ -177,6 +188,8 @@ public:
             announcement_pending = false;
             return doc["success"] == true ? Event::PlaybackAccepted : Event::PlaybackFailed;
         }
+        if (type == "result" && doc["success"] == false &&
+            wifi_id_ && (doc["id"] | -1) == wifi_id_) return Event::WifiError;
         if (type == "result" && doc["success"] == false &&
             ((control_id_ && (doc["id"] | -1) == control_id_) ||
              (state_id_ && (doc["id"] | -1) == state_id_) ||
@@ -364,7 +377,7 @@ private:
         return media;
     }
     int next_id_ = 0;
-    int control_id_ = 0, state_id_ = 0, heartbeat_id_ = 0;
+    int control_id_ = 0, state_id_ = 0, heartbeat_id_ = 0, wifi_id_ = 0;
     std::string last_start_, last_cancel_;
     static bool pressed(JsonVariantConst state, std::string& previous) {
         if (!state.is<const char*>()) return false;
