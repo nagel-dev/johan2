@@ -11,6 +11,8 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "esp_heap_caps.h"
+#include "audio_output.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
@@ -35,6 +37,8 @@ static constexpr bool kStopListener =
 #endif
 
 void AssistClient::start(AudioOutput* audio) {
+    audio_ = audio;
+    metrics_boot_id_ = esp_random();
     if (!strlen(CONFIG_JOHAN2_HA_TOKEN)) {
         ESP_LOGI(TAG, "Assist disabled: set HA token in local sdkconfig");
         return;
@@ -71,6 +75,7 @@ void AssistClient::submit(const int16_t* samples, size_t count) {
     block.count = count;
     memcpy(block.samples, samples, count * sizeof(int16_t));
     if (xQueueSend(audio_queue_, &block, 0) != pdTRUE) {
+        runtime_metrics.mic_queue_drops.fetch_add(1);
         // A gap can corrupt a command. Restart the session instead of queuing stale audio.
         accepting_.store(false);
         transport_failed_.store(true);
@@ -296,6 +301,7 @@ void AssistClient::run() {
             (protocol_.announcement_pending && esp_timer_get_time() >= announcement_deadline_)) {
             ESP_LOGW(TAG, "Restarting Assist: %s (state %s)",
                      failed ? "transport failure" : "pipeline/playback timeout", assist_state_);
+            runtime_metrics.assist_restarts.fetch_add(1);
             publish_state("error");
             cancel_local_announcement();
             reset_audio();
@@ -342,6 +348,7 @@ void AssistClient::run() {
                     ESP_LOGI(TAG, "HA authenticated");
                     retry_at_ = 0;
                     wifi_report_at_ = 0;
+                    diagnostics_report_at_ = 0;
                     if (kDirectReplies && !send_text(protocol_.subscribe_announcements())) transport_failed_.store(true);
 #ifdef CONFIG_JOHAN2_HOMEDASH_SYNC
                     if (!send_text(protocol_.subscribe_control())) transport_failed_.store(true);
@@ -359,6 +366,8 @@ void AssistClient::run() {
                     ESP_LOGW(TAG, "HomeDash sync rejected; check HA helpers and device permissions");
                 } else if (result == AssistProtocol::Event::WifiError) {
                     ESP_LOGW(TAG, "Wi-Fi sensor report rejected; check script.johan2_wifi_report and HA permissions");
+                } else if (result == AssistProtocol::Event::DiagnosticsError) {
+                    ESP_LOGW(TAG, "Diagnostics report rejected; check script.johan2_diagnostics_report and HA permissions");
                 } else if (result == AssistProtocol::Event::LocalAnnouncementError) {
                     ESP_LOGW(TAG, "Local announcement rejected; check HA bridge, helpers, URL and permissions");
                 } else if (result == AssistProtocol::Event::LocalAnnouncementStop) {
@@ -531,6 +540,28 @@ void AssistClient::run() {
             }
         }
         const int64_t now = esp_timer_get_time();
+#ifdef CONFIG_JOHAN2_DIAGNOSTICS
+        if (protocol_.authenticated && now >= diagnostics_report_at_) {
+            diagnostics_report_at_ = now + 10'000'000LL;
+            RuntimeSnapshot snapshot;
+            snapshot.boot_id = metrics_boot_id_;
+            snapshot.uptime_s = static_cast<uint32_t>(now / 1000000);
+            constexpr uint32_t heap_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+            snapshot.internal_heap_bytes = heap_caps_get_free_size(heap_caps);
+            snapshot.min_internal_heap_bytes = heap_caps_get_minimum_free_size(heap_caps);
+            snapshot.main_loop_age_ms = metric_age_ms(now, runtime_metrics.main_loop_at_us.load());
+            snapshot.sendspin_connected = runtime_metrics.sendspin_connected.load();
+            snapshot.stream_active = audio_ && audio_->stream_active();
+            snapshot.pcm_age_ms = audio_ ? metric_age_ms(now, audio_->last_pcm_write_us()) : -1;
+            snapshot.pcm_gaps = runtime_metrics.pcm_gaps.load();
+            snapshot.i2s_errors = runtime_metrics.i2s_errors.load();
+            snapshot.assist_restarts = runtime_metrics.assist_restarts.load();
+            snapshot.mic_queue_drops = runtime_metrics.mic_queue_drops.load();
+            snapshot.mic_overruns = runtime_metrics.mic_overruns.load();
+            snapshot.wifi_disconnects = runtime_metrics.wifi_disconnects.load();
+            if (!send_text(protocol_.diagnostics_report(snapshot))) ESP_LOGW(TAG, "Diagnostics report delayed");
+        }
+#endif
 #ifdef CONFIG_JOHAN2_WIFI_SENSOR
         if (protocol_.authenticated && now >= wifi_report_at_) {
             wifi_report_at_ = now + 10'000'000LL;

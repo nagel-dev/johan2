@@ -2,11 +2,12 @@
 #include <ArduinoJson.h>
 #include <cstring>
 #include <string>
+#include "runtime_metrics.h"
 
 // HA Assist wire state, kept independent of ESP-IDF so it can be tested on a host.
 class AssistProtocol {
 public:
-    enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, OwnerChanged, SyncError, WifiError, LocalAnnouncement, LocalAnnouncementStop, LocalAnnouncementError, Transcript, SpeechReady, StopTranscript, PlaybackAccepted, PlaybackFailed, Silent, Finished, Error, AuthInvalid };
+    enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, OwnerChanged, SyncError, WifiError, DiagnosticsError, LocalAnnouncement, LocalAnnouncementStop, LocalAnnouncementError, Transcript, SpeechReady, StopTranscript, PlaybackAccepted, PlaybackFailed, Silent, Finished, Error, AuthInvalid };
     bool listening_cue_enabled = true; // Follows input_boolean.johan2_listening_cue; on until HA says off.
     bool owns_voice = false; // Fail closed until HA grants this device voice ownership.
     bool authenticated = false;
@@ -40,6 +41,7 @@ public:
         stop_id_ = 0;
         handler = 0;
         control_id_ = state_id_ = heartbeat_id_ = wifi_id_ = 0;
+        diagnostics_id_ = 0;
         local_subscription_id_ = local_status_id_ = 0;
         local_url_.clear();
         local_token_.clear();
@@ -190,6 +192,32 @@ public:
         serializeJson(doc, result);
         return result;
     }
+    std::string diagnostics_report(const RuntimeSnapshot& snapshot) {
+        JsonDocument doc;
+        doc["id"] = diagnostics_id_ = ++next_id_;
+        doc["type"] = "call_service";
+        doc["domain"] = "script";
+        doc["service"] = "johan2_diagnostics_report";
+        auto data = doc["service_data"]["metrics"].to<JsonObject>();
+        data["boot_id"] = snapshot.boot_id;
+        data["uptime_s"] = snapshot.uptime_s;
+        data["internal_heap_bytes"] = snapshot.internal_heap_bytes;
+        data["min_internal_heap_bytes"] = snapshot.min_internal_heap_bytes;
+        data["main_loop_age_ms"] = snapshot.main_loop_age_ms;
+        data["pcm_age_ms"] = snapshot.pcm_age_ms;
+        data["pcm_gaps"] = snapshot.pcm_gaps;
+        data["i2s_errors"] = snapshot.i2s_errors;
+        data["assist_restarts"] = snapshot.assist_restarts;
+        data["mic_queue_drops"] = snapshot.mic_queue_drops;
+        data["mic_overruns"] = snapshot.mic_overruns;
+        data["wifi_disconnects"] = snapshot.wifi_disconnects;
+        data["sendspin_connected"] = snapshot.sendspin_connected;
+        data["stream_active"] = snapshot.stream_active;
+        data["status"] = snapshot.status();
+        std::string result;
+        serializeJson(doc, result);
+        return result;
+    }
     std::string pipeline_update(const char* pipeline) {
         JsonDocument doc;
         doc["id"] = ++next_id_;
@@ -255,6 +283,8 @@ public:
         }
         if (type == "result" && doc["success"] == false &&
             wifi_id_ && (doc["id"] | -1) == wifi_id_) return Event::WifiError;
+        if (type == "result" && doc["success"] == false &&
+            diagnostics_id_ && (doc["id"] | -1) == diagnostics_id_) return Event::DiagnosticsError;
         if (type == "result" && doc["success"] == false &&
             ((control_id_ && (doc["id"] | -1) == control_id_) ||
              (state_id_ && (doc["id"] | -1) == state_id_) ||
@@ -447,6 +477,7 @@ private:
     }
     int next_id_ = 0;
     int control_id_ = 0, state_id_ = 0, heartbeat_id_ = 0, wifi_id_ = 0;
+    int diagnostics_id_ = 0;
     int local_subscription_id_ = 0, local_status_id_ = 0;
     std::string local_url_, local_token_, last_local_url_;
     std::string last_start_, last_cancel_;

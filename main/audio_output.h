@@ -23,6 +23,8 @@ public:
     void on_stream_end() override;
     void on_volume_changed(uint8_t volume) override;
     void on_mute_changed(bool mute) override { muted_.store(mute); }
+    bool stream_active() const { return active_.load(); }
+    int64_t last_pcm_write_us() const { return music_write_at_.load(); }
     // Direct reply playback (called from the TTS task): 48 kHz, stereo, 16-bit frames.
     // Mixed over music when Sendspin is streaming; otherwise written straight to I2S.
     bool tts_begin();

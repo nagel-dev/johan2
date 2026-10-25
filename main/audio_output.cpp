@@ -1,6 +1,7 @@
 #include "sdkconfig.h"
 #include "audio_output.h"
 #include "audio_mix.h"
+#include "runtime_metrics.h"
 #include "assist_client.h"
 #include "mic_diagnostics.h"
 #include "mic_pcm.h"
@@ -324,6 +325,7 @@ bool AudioOutput::write_tts_locked(const void* data, size_t bytes) {
     size_t written = 0;
     const esp_err_t err = i2s_channel_write(tx_, data, bytes, &written, 200);
     if (err == ESP_OK && written == bytes) return true;
+    runtime_metrics.i2s_errors.fetch_add(1);
     ESP_LOGW(TAG, "Direct speech write failed: %s (%u/%u bytes)", esp_err_to_name(err),
              static_cast<unsigned>(written), static_cast<unsigned>(bytes));
     return false;
@@ -454,8 +456,11 @@ size_t AudioOutput::on_audio_write(uint8_t* data, size_t length, uint32_t timeou
     size_t written = 0;
     const esp_err_t err = i2s_channel_write(tx_, scratch_, bytes, &written, timeout_ms);
     if (written) {
-        music_write_at_.store(esp_timer_get_time());
+        const int64_t now = esp_timer_get_time();
+        const int64_t previous = music_write_at_.exchange(now);
+        if (is_pcm_delivery_gap(previous, now)) runtime_metrics.pcm_gaps.fetch_add(1);
     }
+    if (err != ESP_OK) runtime_metrics.i2s_errors.fetch_add(1);
     xSemaphoreGive(tx_lock_);
     // Analyze only accepted source frames, once, including partial-write retries.
     // Volume/mute still do not change the music display. One stereo pass collects
@@ -642,7 +647,10 @@ void AudioOutput::microphone_task(void* context) {
         // overruns cannot hide behind apparently healthy DSP-only timings.
         const uint32_t block_us = processing_us + (esp_timer_get_time() - dsp_finished);
         max_block_us = std::max(max_block_us, block_us);
-        if (block_us > count * 1000000 / 16000) ++over_budget_blocks;
+        if (block_us > count * 1000000 / 16000) {
+            ++over_budget_blocks;
+            runtime_metrics.mic_overruns.fetch_add(1);
+        }
         const int64_t stats_now = esp_timer_get_time();
         if (stats_now >= next_stats_us) {
             next_stats_us = stats_now + 10000000;

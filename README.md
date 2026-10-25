@@ -306,6 +306,44 @@ playback quality.
 Host template check, from the HomeDash repository:
 `python3 tests/test_johan2_wifi_sensor.py` (PyYAML and Jinja2).
 
+### Runtime diagnostics in Home Assistant
+
+Install `ha/packages/johan2_diagnostics.yaml` from the HomeDash repository, check
+HA configuration and restart HA. Enable `JOHAN2_DIAGNOSTICS` (default off), build
+and flash Johan2. Its HA user needs access to `script.johan2_diagnostics_report`.
+It sends a typed snapshot immediately after authentication and every ten seconds
+over the existing Assist connection, independently of HomeDash, its proxy and
+voice ownership. No extra firmware task, ISR reporting or flash writes are added.
+
+HA exposes runtime status, uptime, current/minimum free internal heap, main-loop
+age, PCM age, cumulative PCM gaps, I2S errors, Assist restarts, microphone queue
+drops/workload overruns and Wi-Fi disconnects, plus Sendspin-connected and
+stream-active binary sensors. Every entity has `last_seen` and `boot_id`; values
+expire after thirty seconds without a report on HA's next ten-second check.
+HA startup requires a fresh report. Counters reset on device reboot.
+
+`main_loop_stalled` means no completed loop sample for at least two seconds;
+`pcm_stalled` means an active stream has had no accepted music PCM write for at
+least one second. A stream with no first PCM write is `awaiting_pcm`; PCM gaps
+count resumed writes separated by at least 500 ms, excluding initial PCM and
+stream changes. `-1` ages mean no sample yet. These do **not** measure Sendspin's
+internal ring-buffer level or prove an underrun. Cached Sendspin connectivity can
+be stale when the main loop is blocked. Continued PCM callbacks can also contain
+silence, so `streaming` does not prove audible sound. Internal-heap readings
+exclude PSRAM; I2S errors include timeouts, and microphone overruns measure
+wall time including preemption.
+
+Host checks:
+
+```sh
+c++ -std=c++17 -Wall -Wextra -Werror -I main \
+  -I managed_components/bblanchon__arduinojson/src \
+  tests/runtime_metrics_test.cpp -o /tmp/johan2-runtime-metrics-test
+/tmp/johan2-runtime-metrics-test
+# From the HomeDash repository (PyYAML and Jinja2):
+python3 tests/test_johan2_diagnostics.py
+```
+
 ### Temporary microphone recording diagnostics
 
 Enable `JOHAN2_MIC_DIAGNOSTICS` in `./scripts/idf.sh menuconfig`, build and flash.

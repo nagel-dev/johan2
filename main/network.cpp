@@ -1,4 +1,5 @@
 #include "network.h"
+#include "runtime_metrics.h"
 #include <cstring>
 #include <algorithm>
 #include "sdkconfig.h"
@@ -16,6 +17,7 @@ void Network::event(void* arg, esp_event_base_t base, int32_t id, void* data) {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         self.retry_.store(true);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        runtime_metrics.wifi_disconnects.fetch_add(1);
         self.connected_.store(false);
         self.retry_.store(true);
         ESP_LOGW(TAG, "Wi-Fi disconnected; reason=%u",

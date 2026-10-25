@@ -41,6 +41,9 @@ private:
     void finish_local_announcement(bool success);
     void cancel_local_announcement();
     TtsPlayer tts_;
+    AudioOutput* audio_{nullptr};
+    uint32_t metrics_boot_id_{0};
+    int64_t diagnostics_report_at_{0};
     bool direct_playing_{false};
     bool direct_timed_out_{false};
     std::string local_announcement_url_, local_announcement_token_;

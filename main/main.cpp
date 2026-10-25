@@ -16,6 +16,7 @@
 #include "audio_output.h"
 #include "assist_client.h"
 #include "mic_diagnostics.h"
+#include "runtime_metrics.h"
 
 static const char* TAG = "johan2";
 
@@ -97,7 +98,14 @@ extern "C" void app_main() {
         audio.poll();
         client.loop();
         const int64_t now = esp_timer_get_time();
-        if (network.is_network_ready() && !client.is_connected() &&
+        const bool network_ready = network.is_network_ready();
+        const bool connected = network_ready && client.is_connected();
+#ifdef CONFIG_JOHAN2_DIAGNOSTICS
+        // Published independently of the reporter: a stuck main loop stays visible.
+        runtime_metrics.sendspin_connected.store(connected);
+        runtime_metrics.main_loop_at_us.store(now);
+#endif
+        if (network_ready && !connected &&
             strlen(CONFIG_JOHAN2_SERVER_URL) && now >= next_connect_us) {
             client.connect_to(CONFIG_JOHAN2_SERVER_URL);
             // Exceeds the library's TCP/upgrade/DNS connect bounds; do not
