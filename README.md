@@ -130,8 +130,11 @@ player and adjust output delay if the connected amplifier adds latency.
 
 ## Home Assistant-aankondigingen
 
-Zie [ha/README.md](ha/README.md) voor het handmatig testen en de blueprint
-voor een gesproken melding wanneer de achterdeur opengaat.
+Alle HA-configuratie voor Johan2 en HomeDash staat centraal in
+[HomeDash's `ha/`](https://github.com/nagel-dev/homedash/tree/main/ha), niet in deze
+firmwarerepository. Zie de
+[HA-handleiding](https://github.com/nagel-dev/homedash/blob/main/ha/README.md)
+voor pakketten, de douchetimer, handmatige tests en de deurmelding-blueprint.
 
 ### INMP441 microphone LED test
 
@@ -246,7 +249,7 @@ reply, which waits for the end cue to finish. If an interrupted reply does not
 release that task within 300 ms of cue
 readiness, the cue is skipped so listening can continue. Disable the option in
 menuconfig to restore silent command starts/ends. With `JOHAN2_HOMEDASH_SYNC`, the beeps can also be switched at runtime with
-`input_boolean.johan2_listening_cue` (from `ha/johan2_assist.yaml`; shown on
+`input_boolean.johan2_listening_cue` (from HomeDash's `ha/packages/johan2_assist.yaml`; shown on
 HomeDash's Home screen). The helper starts off when first created: switch it on once.
 Only `off` mutes; a missing helper leaves the build default. During initial music-stream
 synchronization a cue can be dropped if the mixer does not consume it within
@@ -563,7 +566,7 @@ Assist requests explicitly disable HA automatic gain. `X-Mic-Metrics` reports
 
 ### HomeDash listening state and remote wake
 
-Install `ha/johan2_assist.yaml` as `/config/packages/johan2_assist.yaml` on HA
+Install HomeDash's `ha/packages/johan2_assist.yaml` as `/config/packages/johan2_assist.yaml` on HA
 (packages enabled), validate the configuration and load its helpers/scripts.
 Enable `JOHAN2_HOMEDASH_SYNC` in Johan2 and `HOMEDASH_JOHAN2_ASSIST` in HomeDash;
 both default off and are enabled in the current local configurations. Rebuild and
@@ -612,14 +615,14 @@ logs; the user confirmed that the revised flow works well.
 ### Shared voice ownership and HomeDash takeover
 
 For a physical remote, bind On to `script.voice_assist_start` and Off to
-`script.voice_assist_cancel` from `ha/johan2_assist.yaml`. These scripts route
+`script.voice_assist_cancel` from HomeDash's `ha/packages/johan2_assist.yaml`. These scripts route
 directly to Johan2 while `input_select.voice_device` selects it, so HomeDash can
 be powered off. When HA selects HomeDash after Johan2 goes offline, the same
 buttons use HomeDash instead. Requests during the two-second microphone handover
 wait up to ten seconds for a selected device; they stop if no device is selected.
 
-With `JOHAN2_HOMEDASH_SYNC` enabled, install both `ha/johan2_assist.yaml`
-and HomeDash's `ha/packages/voice_failover.yaml` before flashing this version.
+With `JOHAN2_HOMEDASH_SYNC` enabled, install both `ha/packages/johan2_assist.yaml`
+and `ha/packages/voice_failover.yaml` from HomeDash before flashing this version.
 The latter owns `input_select.voice_device`, the five-second heartbeat helpers,
 and the persisted `input_text.johan2_voice_pipeline` value. Missing ownership
 helpers leave Johan2's automatic wake listener stopped; synchronization-disabled

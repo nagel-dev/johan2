@@ -93,7 +93,7 @@ menu "Johan2 Player Configuration"
         bool "Synchronize Assist state and remote wake via Home Assistant"
         default n
         help
-            Requires ha/johan2_assist.yaml on HA and HomeDash remote mode.
+            Requires HomeDash's ha/packages/johan2_assist.yaml on HA and HomeDash remote mode.
             Publishes input_select.johan2_assist_state and subscribes to
             the two input_button.johan2_assist_start/cancel helpers.
     config JOHAN2_HOMEDASH_TRANSCRIPT_URL
