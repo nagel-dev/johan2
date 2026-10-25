@@ -1,5 +1,10 @@
 # Changes
 
+## 2026-10-25 (HomeDash unresponsive Music screen)
+
+- **Finding** `HOMEDASH_FREEZE_INVESTIGATION.md` — HomeDash stopped receiving LED updates, showed stale "No master" and became touch-unresponsive while HA still selected the online Johan2 player. Passive USB diagnostics confirm watchdog starvation with `tcpip` repeatedly inside FreeRTOS `vListInsert`, called by `vTaskPlaceOnEventList`; the source of list corruption/misuse remains unknown. Retain filtered registers and distinguish this confirmed firmware hang from a normal ownership or proxy outage.
+- **Recovery / limitation** The USB debugger unexpectedly ran its default memory-protection reset on attach, after initially halting in the same list loop. Reported this side effect, explicitly resumed the CPU and shut down the debugger. HomeDash reconnected, and the user confirmed touch works again. No HomeDash firmware/source or HA configuration change; this is recovery, not a verified root-cause fix. Post-reset backtraces are not evidence of the original hang.
+
 ## 2026-10-25 (HomeDash post memory cleanup)
 
 - **Fix** `main/assist_client.cpp` — run HomeDash HTTP posting in a normally returning helper before the task deletes itself, so C++ destructors release the owned post, payload and URL on success, HTTP/client failures and malformed-URL exits. Keep the existing asynchronous posting and timeout behavior. Update the dependency audit to record the correction; physical heap stability and the cause of earlier slowdowns remain unverified.
