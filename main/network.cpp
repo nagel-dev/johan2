@@ -85,7 +85,6 @@ void Network::poll() {
     if (connected_.load()) {
         retry_delay_ms_ = 1000;
         retry_at_ = 0;
-        retry_.store(false);
         if (now >= link_log_at_) {
             link_log_at_ = now + 10'000'000LL;
             wifi_ap_record_t ap{};
@@ -96,8 +95,7 @@ void Network::poll() {
         }
         return;
     }
-    if (retry_.load() && now >= retry_at_) {
-        retry_.store(false);
+    if (now >= retry_at_ && retry_.exchange(false)) {
         retry_at_ = now + retry_delay_ms_ * 1000LL;
         retry_delay_ms_ = std::min(retry_delay_ms_ * 2, uint32_t{60000});
         const esp_err_t err = esp_wifi_connect();

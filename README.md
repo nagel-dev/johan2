@@ -100,7 +100,8 @@ Assistant may show a new player entry. No flash erase is needed.
 ## Implementation and limits
 
 - `main/network.cpp`: automatic Wi-Fi retry with backoff, without blocking the
-  ESP event loop; modem sleep disabled for audio. Connecting/reconnecting scans
+  ESP event loop; disconnect requests survive concurrent main-loop polls.
+  Modem sleep is disabled for audio. Connecting/reconnecting scans
   all channels and prioritizes matching access points by signal strength rather
   than stopping at the first match. This can take longer to connect and does not
   add roaming while connected.

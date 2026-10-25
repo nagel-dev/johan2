@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-10-25 (review: Wi-Fi reconnect race)
+
+- **Fix** `main/network.cpp`, `tests/network_retry_test.py`, `README.md` — consume reconnect requests atomically only when a connection attempt is due, and never clear a disconnect request from a stale connected-state branch, so that an asynchronous disconnect cannot permanently stop Wi-Fi recovery. Preserve connection backoff and in-flight association attempts. The deterministic regression fails on the previous implementation; host interleaving/backoff checks and the ESP-IDF build pass. Physical Wi-Fi recovery remains unverified.
+
 ## 2026-10-25 (HA runtime diagnostics)
 
 - **Feature** `main/runtime_metrics.h`, `main/assist_client.cpp/.h`, `main/assist_protocol.h`, `main/audio_output.cpp/.h`, `main/network.cpp`, `main/main.cpp`, `main/Kconfig.projbuild`, `tests/runtime_metrics_test.cpp`, `README.md` — optional `JOHAN2_DIAGNOSTICS` publishes typed snapshots over the existing authenticated HA connection immediately after authentication and every ten seconds, independently of HomeDash and voice ownership. Expose uptime/boot ID, internal heap headroom, main-loop/PCM age, stream/connectivity state and cumulative PCM gaps, I2S errors, Assist restarts, microphone queue drops/workload overruns and Wi-Fi disconnects. The canonical HA package validates payloads, exposes individual sensors and expires stale reports after thirty seconds. No new task, ISR work, NVS writes or managed-component edits. PCM gaps are observations, not internal Sendspin underrun/fill counters; deployment and physical validation remain pending.
