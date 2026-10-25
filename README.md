@@ -191,8 +191,10 @@ detection. See the AEC test below. `JOHAN2_TTS_DIRECT` plays HA-generated MP3/WA
 replies through the local mixer. When it is disabled or a reply cannot be decoded,
 `JOHAN2_HA_REPLY_PLAYER` forwards the generated audio to that HA
 media player using `media_player.play_media` with `announce: true`; Music Assistant
-handles playback and restoration of the music queue through Sendspin. Firmware
-ducking ends before the reply so speech is not attenuated. Capture stays stopped
+handles playback and restoration of the music queue through Sendspin. This
+fallback is also permitted after decoder-buffer or HTTP-client allocation fails,
+without retaining a failed request's allocation. Firmware ducking ends before
+the reply so speech is not attenuated. Capture stays stopped
 while the announcement service request is pending, with a 90-second watchdog and
 no automatic announcement retry (to avoid duplicate replies). Without a reply
 player configured, commands still work but there are no spoken answers.
@@ -287,6 +289,7 @@ c++ -std=c++17 -Wall -Wextra -Werror -I tests/tts_stubs -I main \
 python3 tests/audio_output_test.py
 python3 tests/network_retry_test.py
 python3 tests/tts_cancel_test.py
+python3 tests/tts_player_test.py
 ```
 
 Protocol reference: <https://developers.home-assistant.io/docs/voice/pipelines/>.

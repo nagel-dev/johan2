@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-10-25 (review: TTS initialization cleanup)
+
+- **Fix** `main/tts_player.cpp`, `tests/tts_player_test.py`, `README.md` — free and clear the decoder output buffer when HTTP-client initialization fails, and explicitly log allocation failures while permitting the configured reply-player fallback before any audio plays, so that repeated failed requests cannot leak 8 KB each or unnecessarily suppress replies. Sanitized host checks alternate 1,000 failed initializations with successful requests and verify zero outstanding output allocations, plus allocation failure, fetch failure, unsupported audio and cancellation cleanup; the ESP-IDF build passes. Physical playback remains unverified.
+
 ## 2026-10-25 (review: TTS fetch cancellation)
 
 - **Fix** `main/tts_player.cpp/.h`, `tests/tts_cancel_test.py`, `README.md` — interrupt established TTS header/body reads with socket shutdown when voice playback is cancelled, so that a stalled response does not hold the shared playback task and next voice command until the thirty-second read timeout. Publish and withdraw the socket under a task-context mutex using ESP-IDF's pre-close disconnect event to prevent descriptor-reuse races, including cancellation just before connection. Bound each transport connection to two seconds while retaining thirty seconds for connected synthesis reads; DNS remains network-stack controlled. Sanitized host checks cover blocked sockets, late publication, idle cancellation and descriptor reuse across 100 lifecycles; the ESP-IDF build passes. No flashing or physical barge-in validation.

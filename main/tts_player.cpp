@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <cerrno>
+#include <cstdlib>
 #include "audio_output.h"
 #include "listening_cue.h"
 #include "esp_audio_simple_dec.h"
@@ -209,7 +210,10 @@ TtsPlayer::Result TtsPlayer::play() {
     frac_ = 0;
     decoded_capacity_ = 8192;
     decoded_ = static_cast<uint8_t*>(malloc(decoded_capacity_));
-    if (!decoded_) return Failed;
+    if (!decoded_) {
+        ESP_LOGW(TAG, "Cannot allocate reply decoder output");
+        return Unsupported;
+    }
     esp_http_client_config_t config{};
     config.url = url_.c_str();
     config.timeout_ms = 2000; // Bound connection setup; connected synthesis reads retain 30 seconds.
@@ -217,7 +221,12 @@ TtsPlayer::Result TtsPlayer::play() {
     config.event_handler = http_event;
     config.user_data = this;
     auto client = esp_http_client_init(&config);
-    if (!client) return Failed;
+    if (!client) {
+        ESP_LOGW(TAG, "Cannot initialize reply HTTP client");
+        free(decoded_);
+        decoded_ = nullptr;
+        return Unsupported;
+    }
     Result result = Failed;
     const esp_err_t opened = open_tts_response(client, cancel_);
     if (opened == ESP_OK) {
