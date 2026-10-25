@@ -174,6 +174,11 @@ Physical microphone/LED operation still needs verification after flashing.
 
 The default endpoint is `ws://haos.home:8123/api/websocket`
 (`JOHAN2_HA_WS_URL`). This is plain LAN WebSocket traffic, including the token.
+Use `wss://` for a TLS endpoint. The HA WebSocket, TTS downloads (including HTTPS
+redirects) and HomeDash HTTP posts attach ESP-IDF's full certificate bundle and
+retain hostname verification. The server must present a matching, trusted chain;
+private/self-signed CAs require a custom certificate bundle in the build.
+Existing plain `ws://` and `http://` endpoints remain supported.
 Microphone audio is 16 kHz / mono / signed 16-bit little-endian PCM. The mic task
 never waits for networking: a separate bounded queue and task handle authentication,
 streaming, reconnects, pipeline errors, and automatic rearming. The capture stream
@@ -290,6 +295,7 @@ python3 tests/audio_output_test.py
 python3 tests/network_retry_test.py
 python3 tests/tts_cancel_test.py
 python3 tests/tts_player_test.py
+python3 tests/tls_config_test.py
 ```
 
 Protocol reference: <https://developers.home-assistant.io/docs/voice/pipelines/>.

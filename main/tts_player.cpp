@@ -10,6 +10,7 @@
 #include "esp_audio_simple_dec_default.h"
 #include "esp_audio_dec_default.h"
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "lwip/sockets.h"
@@ -216,6 +217,7 @@ TtsPlayer::Result TtsPlayer::play() {
     }
     esp_http_client_config_t config{};
     config.url = url_.c_str();
+    config.crt_bundle_attach = esp_crt_bundle_attach;
     config.timeout_ms = 2000; // Bound connection setup; connected synthesis reads retain 30 seconds.
     config.buffer_size = 2048;
     config.event_handler = http_event;

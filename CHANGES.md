@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-10-25 (review: TLS certificate trust)
+
+- **Fix** `main/assist_client.cpp`, `main/tts_player.cpp`, `sdkconfig.defaults`, `tests/tls_config_test.py`, `tests/tts_player_test.py`, `README.md` — attach ESP-IDF's full certificate bundle to the HA WebSocket, direct TTS HTTP client and HomeDash HTTP posts, so that trusted WSS/HTTPS endpoints and HTTPS audio redirects can establish TLS without disabling certificate or hostname checks. Make bundle defaults explicit and document private-CA requirements; preserve plaintext endpoint support and existing certificate-date configuration. Sanitized host checks verify all three actual client configuration blocks and request cleanup; the ESP-IDF build passes. Live TLS connections and physical playback remain unverified.
+
 ## 2026-10-25 (review: TCP cancellation regression)
 
 - **Test** `tests/tts_cancel_test.py` — use loopback TCP instead of Unix-domain sockets to match the device's HTTP transport and avoid an intermittent macOS Unix-socket shutdown/read failure. Retain blocked-read interruption, late connection, descriptor-lifetime and idle-cancellation coverage. Five consecutive sanitized runs passed across 500 connection lifecycles; no firmware change.

@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -56,6 +57,7 @@ void AssistClient::start(AudioOutput* audio) {
     ESP_ERROR_CHECK(audio_queue_ && messages_ ? ESP_OK : ESP_ERR_NO_MEM);
     esp_websocket_client_config_t cfg{};
     cfg.uri = CONFIG_JOHAN2_HA_WS_URL;
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
     cfg.task_name = "ha_ws";
     cfg.task_stack = 6144;
     cfg.buffer_size = 4096;
@@ -242,6 +244,7 @@ static void perform_homedash_post(void* context) {
     url += post->path;
     esp_http_client_config_t config{};
     config.url = url.c_str();
+    config.crt_bundle_attach = esp_crt_bundle_attach;
     config.method = HTTP_METHOD_POST;
     config.timeout_ms = 3000;
     if (auto client = esp_http_client_init(&config)) {

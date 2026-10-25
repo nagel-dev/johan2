@@ -26,6 +26,7 @@ struct esp_http_client_config_t {
     int timeout_ms, buffer_size;
     esp_err_t (*event_handler)(esp_http_client_event_t*);
     void* user_data;
+    esp_err_t (*crt_bundle_attach)(void*);
 };
 struct esp_audio_simple_dec_cfg_t { int dec_type; };
 struct AudioOutput {
@@ -46,8 +47,10 @@ static void tracked_free(void* pointer) {
     std::free(pointer);
 }
 static int64_t esp_timer_get_time() { return 1000000; }
+static esp_err_t esp_crt_bundle_attach(void*) { return ESP_OK; }
 static void* esp_http_client_init(esp_http_client_config_t* config) {
     assert(config->timeout_ms == 2000 && config->event_handler && config->user_data);
+    assert(config->crt_bundle_attach == esp_crt_bundle_attach);
     reads = 0;
     return fail_client ? nullptr : reinterpret_cast<void*>(1);
 }
