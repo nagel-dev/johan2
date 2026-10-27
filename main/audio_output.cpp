@@ -81,8 +81,8 @@ void AudioOutput::init(sendspin::PlayerRole& player, AssistClient* assist) {
     mic.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO);
     mic.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT; // INMP441 L/R tied to GND.
     mic.gpio_cfg.mclk = I2S_GPIO_UNUSED;
-    mic.gpio_cfg.bclk = GPIO_NUM_15;
-    mic.gpio_cfg.ws = GPIO_NUM_16;
+    mic.gpio_cfg.bclk = GPIO_NUM_18;
+    mic.gpio_cfg.ws = GPIO_NUM_8;
     mic.gpio_cfg.dout = I2S_GPIO_UNUSED;
     mic.gpio_cfg.din = GPIO_NUM_17;
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(mic_rx_, &mic));

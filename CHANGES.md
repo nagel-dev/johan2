@@ -1,5 +1,10 @@
 # Changes
 
+## 2026-10-27 (three-pin plug relocation)
+
+- **Deployment** Flashed the revised mapping through `./scripts/idf.sh -p /dev/cu.usbmodem5C4C2137161 flash`. Bootloader, partition table and application write hashes verified; the flasher reset the board successfully. Physical microphone capture and AUX playback remain unverified.
+- **Hardware / firmware** Preserve the existing signal order in both three-pin plugs while moving them to consecutive pins on header J1: AUX DIN/BCK/LRCK → GPIO7/6/5 and microphone WS/SCK/SD → GPIO8/18/17. Update the DAC data default, microphone clock assignments and ignored local `sdkconfig`, and document plug orientation from USB toward the antenna. GPIO15/16 separate the plugs; GPIO48 remains available for the RGB LED and GPIO35–37 remain reserved for octal PSRAM. `./scripts/idf.sh build` passed with ESP-IDF 6.0.1; generated configuration confirms DAC BCLK6/LRCK5/DOUT7 and LED48. Physical microphone capture and AUX playback remain unverified.
+
 ## 2026-10-25 (review: TLS certificate trust)
 
 - **Fix** `main/assist_client.cpp`, `main/tts_player.cpp`, `sdkconfig.defaults`, `tests/tls_config_test.py`, `tests/tts_player_test.py`, `README.md` — attach ESP-IDF's full certificate bundle to the HA WebSocket, direct TTS HTTP client and HomeDash HTTP posts, so that trusted WSS/HTTPS endpoints and HTTPS audio redirects can establish TLS without disabling certificate or hostname checks. Make bundle defaults explicit and document private-CA requirements; preserve plaintext endpoint support and existing certificate-date configuration. Sanitized host checks verify all three actual client configuration blocks and request cleanup; the ESP-IDF build passes. Live TLS connections and physical playback remain unverified.

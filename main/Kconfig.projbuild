@@ -25,7 +25,7 @@ menu "Johan2 Player Configuration"
     config JOHAN2_I2S_DOUT
         int "PCM5102A DIN GPIO"
         range 0 48
-        default 4
+        default 7
     config JOHAN2_LED_GPIO
         int "Onboard addressable RGB LED GPIO (-1 disables)"
         range -1 48

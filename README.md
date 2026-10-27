@@ -9,10 +9,25 @@ Assistant access token is needed.
 
 | ESP32-S3 | PCM5102A |
 | --- | --- |
+| GPIO7 | DIN |
 | GPIO6 | BCK / BCLK |
 | GPIO5 | LCK / LRCK / WS |
-| GPIO4 | DIN |
 | GND | GND |
+
+The existing three-pin signal plugs can be moved intact to header J1. With
+the component side facing you, antenna at the top and USB sockets at the bottom,
+J1 is the left header. Read each plug from bottom to top (toward the antenna):
+
+| Plug | First pin | Second pin | Third pin |
+| --- | --- | --- | --- |
+| AUX DAC | DIN → GPIO7 | BCK → GPIO6 | LRCK → GPIO5 |
+| INMP441 microphone | WS → GPIO8 | SCK → GPIO18 | SD → GPIO17 |
+
+GPIO15 and GPIO16 are between the two plugs and remain unused. Move only the signal plugs;
+power, ground and microphone L/R wiring stay as before. GPIO35–37 are reserved
+for octal PSRAM on the N16R8; GPIO48 remains assigned to the RGB LED. Existing
+local configurations must set `JOHAN2_I2S_BCLK=6`, `JOHAN2_I2S_LRCK=5` and
+`JOHAN2_I2S_DOUT=7`; changing defaults does not replace saved menuconfig values.
 
 Keep the DAC power wiring and any module solder bridges from your working
 Arduino setup. Module supply requirements vary; do not change them based on
@@ -139,8 +154,8 @@ voor pakketten, de douchetimer, handmatige tests en de deurmelding-blueprint.
 
 ### INMP441 microphone LED test
 
-Wire VDD to 3V3 (never 5V), GND and L/R to GND, SCK to GPIO15,
-WS to GPIO16, and SD to GPIO17. The microphone uses a separate I2S controller
+Wire VDD to 3V3 (never 5V), GND and L/R to GND, SCK to GPIO18,
+WS to GPIO8, and SD to GPIO17. The microphone uses a separate I2S controller
 at 16 kHz with 32-bit left-channel slots. The RGB LED retains its coloured music effect. Sound above the microphone noise
 threshold temporarily overrides it with white; brightness follows RMS level with
 a short decay, capped at 35% per colour. Keep quiet for the first second after

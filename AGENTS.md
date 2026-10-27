@@ -1,6 +1,6 @@
 # Johan2 firmware
 
-- Target ESP32-S3 N16R8 with PCM5102A: BCLK 6, LRCK 5, DOUT 4.
+- Target ESP32-S3 N16R8 with PCM5102A: BCLK 6, LRCK 5, DOUT 7. INMP441 microphone: WS 8, SCK 18, SD 17.
 - Use ESP-IDF 6.0.1; run `./scripts/idf.sh build` after firmware changes.
 - Always build via `./scripts/idf.sh`, not `idf.py`: it sets `safe.bareRepository=all` for its process, because a global `safe.bareRepository=explicit` breaks the component manager (`git config --get remote.origin.url` fails). Do not change global git config or delete caches to work around it.
 - Credentials belong only in ignored local sdkconfig files; never log them.
