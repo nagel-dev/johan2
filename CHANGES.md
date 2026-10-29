@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-10-29 (Spotify Soloist playback stops near track end)
+
+- **Finding** `Music Assistant` (upstream) — Spotify Soloist on Music Assistant 2.10.8 can incorrectly stop the player queue a few seconds before the end of a track, leaving the next track unplayed, including over Sendspin. The cause is the pause handling introduced by [#7117](https://github.com/music-assistant/server/pull/7117): Soloist's transient end-of-track `paused` event was treated as an external pause. The upstream fix, [PR #7244](https://github.com/music-assistant/server/pull/7244) (related [support issue #6860](https://github.com/music-assistant/support/issues/6860)), was merged on 2026-10-27 and included in 2.11.0.dev2026102804; inclusion in stable 2.10.9 is not yet confirmed. Johan2 is working on MA 2.10.6 and should remain there until a stable release with the fix is verified. This is a Music Assistant regression, not an established Johan2/Sendspin firmware fault. Documentation only; no firmware, HA configuration, build, deployment or playback test performed.
+
 ## 2026-10-25 (review: TLS certificate trust)
 
 - **Fix** `main/assist_client.cpp`, `main/tts_player.cpp`, `sdkconfig.defaults`, `tests/tls_config_test.py`, `tests/tts_player_test.py`, `README.md` — attach ESP-IDF's full certificate bundle to the HA WebSocket, direct TTS HTTP client and HomeDash HTTP posts, so that trusted WSS/HTTPS endpoints and HTTPS audio redirects can establish TLS without disabling certificate or hostname checks. Make bundle defaults explicit and document private-CA requirements; preserve plaintext endpoint support and existing certificate-date configuration. Sanitized host checks verify all three actual client configuration blocks and request cleanup; the ESP-IDF build passes. Live TLS connections and physical playback remain unverified.
