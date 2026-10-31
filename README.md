@@ -266,6 +266,16 @@ The selected HA conversation agent must be allowed to see relevant entities. For
 “is de achterdeur open?”, expose the door sensor to Assist and give it a clear
 name/alias. Audio routing cannot supply entity state the agent cannot access.
 
+For family calendar searches, `ha/packages/johan2_family_calendar.yaml` provides
+a read-only Assist script for `calendar.family`; change that entity ID before
+installing if necessary. Install the package in HA and expose the **Familiekalender
+zoeken** script to Assist. The LLM assistant needs home-control permission.
+Searches default to the next 12 months and may specify an inclusive date range
+and a case-insensitive title substring. Results include titles and start/end
+times, not descriptions or locations. Calendar errors are reported as errors,
+not empty search results. A cloud conversation agent receives matching results;
+do not expose the script unless that sharing is acceptable.
+
 Logs report connection/authentication, wake detection and generic errors, without
 tokens, recognized text or server payloads. A rejected token disables Assist until
 reboot. Missing token leaves the player and microphone LED test functional.
@@ -299,6 +309,9 @@ through the existing DAC at the direct reply volume. It waits for
 the wake-word tail to be discarded first; speak after the beep. The microphone
 stream is held during playback and for 80 ms afterward to exclude cue/echo audio.
 Background wake-word monitoring and the optional spoken-stop listener do not beep.
+If HA recognizes no text, the end cue plays and Johan2 waits for the wake word
+again instead of starting another listening attempt. A recognized but unclear
+command can still receive one retry.
 The cues share the reply playback task and music mixer; they cannot overlap a direct
 reply, which waits for the end cue to finish. If an interrupted reply does not
 release that task within 300 ms of cue

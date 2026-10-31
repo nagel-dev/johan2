@@ -74,6 +74,7 @@ struct AssistClient {
     void cancel_command(bool stop_playback);
     void wake() { @WAKE@ }
     void listening() { @LISTENING@ }
+    void finish_event(AssistProtocol::Event result, bool was_command_capture) { @FINISH@ }
     void schedule_cue() { const auto now = clock_us; @CUE@ }
     void launch() { const auto now = clock_us; const bool voice_allowed = true; @LAUNCH@ }
     bool notification_ready() { const auto now = clock_us; return @ANNOUNCER@; }
@@ -139,11 +140,30 @@ int main() {
         assert(std::string(c->assist_state_) == "idle");
         delete c;
     }
+    clock_us = 1000000;
+    AssistClient silent;
+    silent.protocol_.authenticated = true;
+    silent.protocol_.begin("", true, "same-conversation", true);
+    auto result = silent.protocol_.receive(R"({"id":1,"type":"event","event":{"type":"error","data":{"code":"stt-no-text-recognized"}}})");
+    silent.finish_event(result, true);
+    assert(!silent.followup_ && !silent.remote_start_pending_);
+    assert(std::string(silent.assist_state_) == "idle");
+    assert(silent.retry_at_ == clock_us + 250000);
+    assert(silent.cue_.pending && silent.cue_.pending_end);
+    clock_us += 250000;
+    silent.launch();
+    assert(!silent.protocol_.running); // The end cue must complete before rearming.
+    silent.cue_.pending = false;
+    silent.launch();
+    JsonDocument next;
+    deserializeJson(next, silent.sent.back());
+    assert(next["start_stage"] == "wake_word"); // Do not reopen command capture.
     puts("Assist handoff: fresh STT, one/no cue, early cancellation, queued notification and wake timing passed");
 }
 '''
 HARNESS = HARNESS.replace("@WAKE@", block("} else if (result == AssistProtocol::Event::Wake) {"))
 HARNESS = HARNESS.replace("@LISTENING@", block("} else if (result == AssistProtocol::Event::Listening) {"))
+HARNESS = HARNESS.replace("@FINISH@", block("} else if (result == AssistProtocol::Event::Error || result == AssistProtocol::Event::Finished ||"))
 HARNESS = HARNESS.replace("@CUE@", block("if (cue_.pending && !cue_.playing) {", True))
 HARNESS = HARNESS.replace("@LAUNCH@", block("if (voice_allowed &&", True))
 HARNESS = HARNESS.replace("@ANNOUNCER@", announcer)

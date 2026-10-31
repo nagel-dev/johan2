@@ -1,0 +1,98 @@
+script:
+  johan2_family_calendar_search:
+    alias: Familiekalender zoeken
+    description: >-
+      Search upcoming family calendar events by title or list events in a date
+      range. Use for questions about the family calendar. Supply dates as
+      YYYY-MM-DD, with end_date inclusive. If no dates are given, the search
+      covers today through the next 12 months. Return the searched period and
+      matching titles and times; never claim an event exists without a result.
+    mode: parallel
+    max: 10
+    fields:
+      start_date:
+        name: Begindatum
+        description: Eerste dag in YYYY-MM-DD; standaard vandaag.
+        selector:
+          text:
+      end_date:
+        name: Einddatum
+        description: Laatste dag inclusief, in YYYY-MM-DD; standaard 12 maanden vanaf de begindatum.
+        selector:
+          text:
+      query:
+        name: Zoekterm
+        description: Optionele tekst in de titel; laat leeg voor alle afspraken in de periode.
+        selector:
+          text:
+    sequence:
+      - variables:
+          start_text: "{{ start_date | default(now().strftime('%Y-%m-%d'), true) | string | trim }}"
+          end_text: "{{ end_date | default('', true) | string | trim }}"
+          search_text: "{{ query | default('', true) | string | trim }}"
+      - if: >-
+          {% set start = strptime(start_text, '%Y-%m-%d', none) %}
+          {% set end = strptime(end_text, '%Y-%m-%d', none) if end_text else none %}
+          {{ start is none or start.strftime('%Y-%m-%d') != start_text
+             or (end_text and (end is none or end.strftime('%Y-%m-%d') != end_text)) }}
+        then:
+          - variables:
+              error_result:
+                error: Gebruik geldige datums in de vorm YYYY-MM-DD.
+          - stop: Gebruik geldige datums in de vorm YYYY-MM-DD.
+            response_variable: error_result
+      - variables:
+          first_day: "{{ start_text }}"
+          end_exclusive: >-
+            {% if end_text %}
+              {{ (strptime(end_text, '%Y-%m-%d').date() + timedelta(days=1)).isoformat() }}
+            {% else %}
+              {% set start = strptime(start_text, '%Y-%m-%d').date() %}
+              {{ start.replace(year=start.year + 1,
+                 day=28 if start.month == 2 and start.day == 29 else start.day).isoformat() }}
+            {% endif %}
+      - if: "{{ end_exclusive <= first_day }}"
+        then:
+          - variables:
+              error_result:
+                error: De einddatum mag niet voor de begindatum liggen.
+          - stop: De einddatum mag niet voor de begindatum liggen.
+            response_variable: error_result
+      - variables:
+          calendar_response: {}
+      - action: calendar.get_events
+        continue_on_error: true
+        target:
+          entity_id: calendar.family
+        data:
+          start_date_time: "{{ today_at('00:00') + timedelta(days=(strptime(first_day, '%Y-%m-%d').date() - now().date()).days) }}"
+          end_date_time: "{{ today_at('00:00') + timedelta(days=(strptime(end_exclusive, '%Y-%m-%d').date() - now().date()).days) }}"
+        response_variable: calendar_response
+      - if: >-
+          {{ calendar_response is not mapping or calendar_response.get('calendar.family') is not mapping
+             or calendar_response['calendar.family'].get('events') is not sequence
+             or calendar_response['calendar.family'].get('events') is mapping
+             or calendar_response['calendar.family'].get('events') is string }}
+        then:
+          - variables:
+              error_result:
+                error: De familiekalender is niet beschikbaar of gaf geen geldig antwoord.
+          - stop: De familiekalender gaf geen geldig antwoord.
+            response_variable: error_result
+      - variables:
+          result: >-
+            {% set ns = namespace(events=[]) %}
+            {% for event in calendar_response['calendar.family']['events'] %}
+              {% if not search_text or search_text | lower in event.get('summary', '') | lower %}
+                {% set ns.events = ns.events + [{
+                  'title': event.get('summary', ''),
+                  'start': event.get('start'),
+                  'end': event.get('end')
+                }] %}
+              {% endif %}
+            {% endfor %}
+            {{ {'calendar': 'familiekalender', 'start_date': first_day,
+                'end_date_inclusive': (strptime(end_exclusive, '%Y-%m-%d').date() - timedelta(days=1)).isoformat(),
+                'query': search_text, 'events': ns.events} }}
+      - stop: Zoeken in de familiekalender afgerond.
+        response_variable: result

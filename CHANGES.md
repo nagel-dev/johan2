@@ -1,5 +1,21 @@
 # Changes
 
+## 2026-10-31 (no retry after silence)
+
+- Treat HA's `stt-no-text-recognized` as the end of listening rather than an unclear command, so silence does not immediately trigger another listening cue. Keep one retry for recognized but unclear commands and preserve the listening-end cue.
+- **Deployment** Built and flashed the firmware with verified write hashes; Johan2 is reachable after restart. The silence and normal-command paths still need a physical listening check.
+
+## 2026-10-31 (wake-word transport investigation)
+
+- Live diagnostics showed repeated Assist transport failures and rising microphone queue-drop counters while music was playing. In a short comparison after a USB-monitor reset, a 40-second music-off window had no additional Assist restarts or queue drops; a 40-second music-on window had five additional restarts and four additional queue drops. The filtered serial output included a microphone WebSocket write returning 0 of 513 bytes. This establishes a music-associated transport problem, not its underlying cause; no firmware fix has been applied.
+- A further four-minute music-on USB observation after another monitor-induced reset had no Assist restarts or Assist queue drops, though some microphone blocks exceeded their 32 ms processing budget. At a separate point, 60 pings had no packet loss, but that does not rule out intermittent TCP stalls. The failure is intermittent; neither microphone workload, Wi-Fi nor HA can yet be identified as the underlying cause.
+- With user permission, built and flashed a temporary AEC-off comparison, then rebuilt and flashed the original AEC-on configuration with its 25 ms delay restored. In four music-on minutes with AEC off, Assist restarts and queue drops did not increase; a previous four-minute AEC-on observation also had no such increases. Internal free heap during the AEC-off observation was roughly 59–113 KB versus roughly 19 KB in the earlier AEC-on observation, but this comparison does not establish that heap pressure causes the intermittent transport stalls. The restored device responds on its Bose page; wake-word recognition was not physically checked in either variant.
+
+## 2026-10-31 (family calendar search)
+
+- Add a read-only Assist script for `calendar.family`, with case-insensitive title search, an inclusive date range and a default of 12 months. Return only titles and start/end times; surface invalid dates and calendar errors. A cloud conversation agent receives matching results when the script is exposed.
+- **Deployment** Installed the package, checked the HA configuration, reloaded scripts and verified the search and error responses without disclosing real events. The user enabled Assist access. An actual voice query and the AI agent's use of the tool remain to be checked.
+
 ## 2026-10-31 (quieter music)
 
 - Halve Sendspin audio again relative to the existing DAC attenuation, leaving direct Assist speech, local cues, and the Bose test tone unchanged. Music remains ducked during direct speech; fallback Assist replies sent through Music Assistant are also quieter because they share the Sendspin audio stream.

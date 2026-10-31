@@ -348,6 +348,7 @@ public:
         if (type == "result" && doc["success"] == false) {
             error_code_ = doc["error"]["code"] | "unknown";
             finish();
+            if (error_code_ == "stt-no-text-recognized") return Event::Finished;
             return Event::Error;
         }
         if (type != "event") return Event::None;
@@ -412,10 +413,10 @@ public:
             return Event::Finished;
         } else if (event == "error") {
             error_code_ = doc["event"]["data"]["code"] | "unknown";
-            if (error_code_ == "stt-no-text-recognized") unclear = true;
             finish();
-            // Quiet rooms routinely time out; rearm promptly instead of backing off.
-            if (doc["event"]["data"]["code"] == "wake-word-timeout") return Event::Finished;
+            // Silence/no recognized text is not an unclear command to retry.
+            if (error_code_ == "wake-word-timeout" || error_code_ == "stt-no-text-recognized")
+                return Event::Finished;
             return Event::Error;
         }
         return Event::None;

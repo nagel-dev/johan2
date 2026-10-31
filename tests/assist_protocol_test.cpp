@@ -160,8 +160,9 @@ int main() {
     assert(command["id"] == 3 && command["start_stage"] == "stt");
     assert(cancel.receive(R"({"id":1,"type":"event","event":{"type":"run-end"}})") == Event::None);
     assert(cancel.running);
-    assert(cancel.receive(R"({"id":3,"type":"event","event":{"type":"error","data":{"code":"stt-no-text-recognized"}}})") == Event::Error);
+    assert(cancel.receive(R"({"id":3,"type":"event","event":{"type":"error","data":{"code":"stt-no-text-recognized"}}})") == Event::Finished);
     assert(cancel.error_code() == "stt-no-text-recognized");
+    assert(!cancel.running && !cancel.unclear && !cancel.wants_followup(false, false));
     deserializeJson(command, cancel.begin_stop("pl"));
     assert(command["id"] == 4 && command["start_stage"] == "stt" && command["end_stage"] == "stt" && cancel.stop_running);
     cancel.receive(R"({"id":4,"type":"event","event":{"type":"run-start","data":{"runner_data":{"stt_binary_handler_id":9}}}})");
@@ -180,8 +181,9 @@ int main() {
     unclear.receive(R"({"id":1,"type":"event","event":{"type":"intent-end","data":{"intent_output":{"response":{"response_type":"error","data":{"code":"no_intent_match"}}}}}})");
     assert(unclear.unclear);
     unclear.begin("", true, nullptr, true);
-    assert(unclear.receive(R"({"id":2,"type":"event","event":{"type":"error","data":{"code":"stt-no-text-recognized"}}})") == Event::Error);
-    assert(unclear.unclear);
+    unclear.receive(R"({"id":2,"type":"event","event":{"type":"stt-vad-start"}})");
+    assert(unclear.receive(R"({"id":2,"type":"event","event":{"type":"error","data":{"code":"stt-no-text-recognized"}}})") == Event::Finished);
+    assert(!unclear.unclear && !unclear.wants_followup(false, false));
     unclear.begin("", true, nullptr, true);
     unclear.receive(R"({"id":3,"type":"event","event":{"type":"intent-end","data":{"intent_output":{"continue_conversation":true,"response":{"response_type":"action_done"}}}}})");
     assert(unclear.continue_conversation && !unclear.unclear);
@@ -192,6 +194,10 @@ int main() {
     unclear.receive(R"({"id":5,"type":"event","event":{"type":"intent-end","data":{"intent_output":{"response":{"response_type":"action_done","speech":{"plain":{"speech":"Klaar."}}}}}}})");
     assert(!unclear.continue_conversation);
     assert(!unclear.wants_followup(true, true));
+    AssistProtocol no_text_result;
+    no_text_result.begin("", true, nullptr, true);
+    assert(no_text_result.receive(R"({"id":1,"type":"result","success":false,"error":{"code":"stt-no-text-recognized"}})") == Event::Finished);
+    assert(!no_text_result.running && !no_text_result.wants_followup(false, false));
     unclear.continue_conversation = true;
     assert(unclear.wants_followup(false, false));
     assert(!unclear.wants_followup(true, true)); // VAD alone cannot repeat a question.
