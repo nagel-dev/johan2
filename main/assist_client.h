@@ -76,6 +76,8 @@ private:
     bool remote_start_pending_{false};
     // Rotate the wake run before sending command audio; retain its single start cue.
     bool wake_handoff_{false};
+    bool speaker_probe_active_{false};
+    int64_t speaker_probe_until_{0};
     const char* assist_state_{"offline"};
     int64_t state_refresh_at_{0};
     int64_t heartbeat_at_{0};

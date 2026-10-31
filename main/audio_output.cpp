@@ -347,13 +347,12 @@ bool AudioOutput::write_tts_locked(const void* data, size_t bytes, size_t& writt
     return false;
 }
 
-bool AudioOutput::tts_write(const int16_t* frames, size_t frame_count, const std::atomic<bool>& cancel) {
-    const int gain = CONFIG_JOHAN2_TTS_VOLUME;
+bool AudioOutput::tts_write(const int16_t* frames, size_t frame_count, const std::atomic<bool>& cancel, int gain) {
     size_t done = 0;
     while (done < frame_count && !cancel.load()) {
         const size_t n = std::min(frame_count - done, sizeof(tts_scratch_) / (CHANNELS * sizeof(int16_t)));
         for (size_t i = 0; i < n * CHANNELS; ++i)
-            tts_scratch_[i] = static_cast<int16_t>(static_cast<int32_t>(frames[done * CHANNELS + i]) * gain / 100);
+            tts_scratch_[i] = audio_mix::half_output(static_cast<int16_t>(static_cast<int32_t>(frames[done * CHANNELS + i]) * gain / 100));
         const size_t bytes = n * CHANNELS * sizeof(int16_t);
         size_t sent_bytes = 0;
         while (sent_bytes < bytes && !cancel.load()) {
@@ -470,12 +469,12 @@ size_t AudioOutput::on_audio_write(uint8_t* data, size_t length, uint32_t timeou
     for (size_t i = 0; i < bytes / 2; ++i) {
         int16_t sample;
         memcpy(&sample, data + i * 2, sizeof(sample));
-        scratch_[i] = audio_mix::music_sample(sample, gain, tts);
+        scratch_[i] = audio_mix::half_output(audio_mix::music_sample(sample, gain, tts));
     }
     if (tts) {
         const size_t got = load_tts_locked(bytes) / 2;
         for (size_t i = 0; i < got; ++i)
-            scratch_[i] = audio_mix::add(scratch_[i], mix_scratch_[i]);
+            scratch_[i] = audio_mix::add_half_output(scratch_[i], mix_scratch_[i]);
     }
     size_t written = 0;
     const esp_err_t err = i2s_channel_write(tx_, scratch_, bytes, &written, timeout_ms);

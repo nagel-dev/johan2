@@ -1,0 +1,150 @@
+# Set johan2_bose_measure_url in secrets.yaml to http://DEVICE_IP:8081/bose/measure.
+rest_command:
+  johan2_bose_measure:
+    url: !secret johan2_bose_measure_url
+    method: POST
+    headers:
+      X-Johan2-Probe: "1"
+    timeout: 30
+
+input_text:
+  johan2_bose_reference:
+    name: Johan2 Bose maximumreferentie
+    max: 255
+  johan2_bose_result:
+    name: Johan2 Bose laatste meting
+    max: 255
+
+script:
+  johan2_bose_check:
+    alias: Johan2 Bose meten
+    mode: single
+    fields:
+      calibrate:
+        description: Sla deze meting op als maximumreferentie.
+        default: false
+    sequence:
+      - variables:
+          calibration: "{{ calibrate | default(false) | bool }}"
+          reference: "{{ states('input_text.johan2_bose_reference') | from_json(default={}) }}"
+          response: {}
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.johan2_bose_result
+        data:
+          value: '{"status":"bezig"}'
+      - if: "{{ not calibration and (reference is not mapping or reference.get('version') != 1 or reference.get('bands') is not sequence or reference.get('bands') is string or reference.get('bands') | length != 3) }}"
+        then:
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.johan2_bose_result
+            data:
+              value: '{"status":"geen referentie"}'
+        else:
+          - action: rest_command.johan2_bose_measure
+            response_variable: response
+            continue_on_error: true
+          - variables:
+              measurement: "{{ response.get('content', {}) if response is mapping else {} }}"
+              valid: >-
+                {%- set m = response.get('content', {}) if response is mapping else {} -%}
+                {%- set ns = namespace(count=0) -%}
+                {%- if response is mapping and response.get('status') == 200 and m is mapping and m.get('valid') == true and m.get('bands') is sequence and m.get('bands') | length == 3 -%}
+                  {%- for i in range(3) -%}
+                    {%- set b = m.bands[i] -%}
+                    {%- if b is mapping and b.get('valid') == true and b.get('gain_db') is number and b.get('hz') == [93.75, 156.25, 218.75][i] -%}
+                      {%- set ns.count = ns.count + 1 -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {{- ns.count >= 2 -}}
+          - if: "{{ not valid }}"
+            then:
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.johan2_bose_result
+                data:
+                  value: >-
+                    {{ {'status': 'bezet' if response is mapping and response.get('status') == 409 else 'meting mislukt', 'time': now().isoformat()} | to_json }}
+            else:
+              - if: "{{ calibration }}"
+                then:
+                  - action: input_text.set_value
+                    target:
+                      entity_id: input_text.johan2_bose_reference
+                    data:
+                      value: >-
+                        {% set ns = namespace(bands=[]) %}
+                        {% for b in measurement.bands %}
+                          {% set ns.bands = ns.bands + [b.get('gain_db') if b is mapping and b.get('valid') == true and b.get('gain_db') is number and b.get('hz') == [93.75, 156.25, 218.75][loop.index0] else none] %}
+                        {% endfor %}
+                        {{ {'version': 1, 'bands': ns.bands} | to_json }}
+                  - action: input_text.set_value
+                    target:
+                      entity_id: input_text.johan2_bose_result
+                    data:
+                      value: >-
+                        {{ {'status': 'referentie opgeslagen', 'time': now().isoformat()} | to_json }}
+                else:
+                  - action: input_text.set_value
+                    target:
+                      entity_id: input_text.johan2_bose_result
+                    data:
+                      value: >-
+                        {% set ns = namespace(deltas=[]) %}
+                        {% for i in range(3) %}
+                          {% set b = measurement.bands[i] %}
+                          {% if b is mapping and b.get('valid') == true and b.get('gain_db') is number and b.get('hz') == [93.75, 156.25, 218.75][i] and reference.bands[i] is number %}
+                            {% set ns.deltas = ns.deltas + [b.get('gain_db') - reference.bands[i]] %}
+                          {% endif %}
+                        {% endfor %}
+                        {% set d = ns.deltas | sort %}
+                        {% if d | length >= 2 %}
+                          {% set delta = d[1] if d | length == 3 else (d[0] + d[1]) / 2 %}
+                          {% set percent = (100 * 10 ** (delta / 20)) | round(1) %}
+                          {% set status = 'te laag' if percent < 45 else 'te hoog' if percent > 55 else 'goed' %}
+                          {{ {'status': status, 'percent': percent, 'time': now().isoformat()} | to_json }}
+                        {% else %}
+                          {{ {'status': 'onvoldoende overeenkomstige tonen', 'time': now().isoformat()} | to_json }}
+                        {% endif %}
+
+template:
+  - button:
+      - name: Johan2 Bose maximum instellen
+        unique_id: johan2_bose_calibrate_max
+        icon: mdi:speaker
+        press:
+          - action: script.johan2_bose_check
+            data:
+              calibrate: true
+      - name: Johan2 Bose meten
+        unique_id: johan2_bose_measure
+        icon: mdi:speaker-wireless
+        press:
+          - action: script.johan2_bose_check
+            data:
+              calibrate: false
+    sensor:
+      - name: Johan2 Bose laatst gemeten status
+        unique_id: johan2_bose_status
+        state: >-
+          {% set result = states('input_text.johan2_bose_result') | from_json(default={}) %}
+          {% if result.get('status') in ['goed', 'te laag', 'te hoog'] and result.get('percent') is number %}
+            {% set percent = result.percent %}
+            {{ 'te laag' if percent < 45 else 'te hoog' if percent > 55 else 'goed' }}
+          {% else %}
+            {{ result.get('status', 'nog niet gemeten') }}
+          {% endif %}
+        attributes:
+          laatste_meting: >-
+            {{ (states('input_text.johan2_bose_result') | from_json(default={})).get('time') }}
+      - name: Johan2 Bose laatst gemeten niveau
+        unique_id: johan2_bose_level
+        unit_of_measurement: "%"
+        availability: >-
+          {{ (states('input_text.johan2_bose_result') | from_json(default={})).get('status') in ['goed', 'te laag', 'te hoog'] }}
+        state: >-
+          {{ (states('input_text.johan2_bose_result') | from_json(default={})).get('percent') }}
+        attributes:
+          laatste_meting: >-
+            {{ (states('input_text.johan2_bose_result') | from_json(default={})).get('time') }}

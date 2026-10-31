@@ -133,6 +133,9 @@ Assistant may show a new player entry. No flash erase is needed.
   receives the same effect through the existing RGB mirror connection.
 - Initial volume is 35%; Music Assistant can change it. It is independent of
   the Arduino library's 0–21 scale.
+- Johan2 attenuates the complete DAC output to half its former amplitude,
+  including mixed music and speech, direct replies, cues and test tones. This
+  reduces the digital peak but does not guarantee a safe acoustic loudness.
 - Only FLAC and PCM at 48 kHz, stereo, 16-bit are advertised. Music Assistant
   handles source conversion. No direct Spotify login or Spotify Connect.
 - The partition table reserves a 6 MB factory app. USB flashing only; OTA is
@@ -435,6 +438,73 @@ uncontrolled, so a deliberate silence/near/far speech test is still required.
 
 ### Playback-reference AEC and music-on testing
 
+#### Manual Bose check in Home Assistant
+
+The optional package `ha/packages/johan2_bose.yaml` adds two buttons and the
+last measurement's status and percentage to Home Assistant. Enable packages,
+copy the file to HA's packages directory, and add this to HA's `secrets.yaml`
+with Johan2's actual LAN address:
+
+```yaml
+johan2_bose_measure_url: http://DEVICE_IP:8081/bose/measure
+```
+
+Check HA's configuration and restart it. Enable both `JOHAN2_MIC_DIAGNOSTICS`
+and `JOHAN2_MIC_AEC` in Johan2 and build/flash the firmware. The diagnostics
+server is **unauthenticated**: use it only on a trusted LAN. Use a fixed IP or
+stable local name. HA must be able to reach port 8081.
+
+Set the Bose to its maximum and press **Johan2 Bose maximum instellen** once.
+The measurement plays test tones at a fixed, bounded digital level, including
+when the player is muted. The Bose's own volume still controls the actual
+loudness, so use care at maximum and stay quiet. A successful reference is
+stored in HA and survives HA restarts. Then adjust the Bose and press **Johan2
+Bose meten**. `sensor.johan2_bose_laatst_gemeten_niveau` shows the last measured
+percentage relative to the maximum; `sensor.johan2_bose_laatst_gemeten_status` reports
+`goed` at 45–55% (target 50%), or `te laag` / `te hoog`. The status also shows a failed or
+busy measurement and has a `laatste_meting` timestamp. On failure, the numeric
+sensor becomes unavailable rather than showing an old result as current.
+
+The percentage is a ratio of measured low-frequency acoustic amplitude to the
+reference, **not** a readout of the Bose knob or a guarantee of speech recognition.
+Keep the speaker and microphone in the same positions, and recalibrate if either
+moves. The physical repeatability of this method at the narrow 45–55% threshold
+has not yet been established; check repeated measurements at unchanged settings
+before relying on the status. The result is a snapshot, not continuous monitoring:
+changes after the last measurement are not detected. To schedule it later, call
+`script.johan2_bose_check` from an HA automation without `calibrate`; every call
+plays the tones and temporarily mutes music. Do not schedule the maximum button.
+
+#### Browser comparison and capture
+
+For an on-demand Bose level comparison, open `http://DEVICE_IP:8081/bose` with
+microphone diagnostics and AEC enabled. **Meet Bose** plays three short bass tones
+(93.75, 156.25 and 218.75 Hz), temporarily mutes music and suspends wake capture,
+then restores normal operation. Stay quiet during the approximately eight-second
+test. After a successful measurement, **Deze stand als nul** saves a reference
+in that browser; measure again after changing the Bose volume. The display uses
+the median change in matching reliable frequency bands, compensating for the
+actual digital DAC signal so the player volume may also change.
+
+This measures relative low-frequency acoustic gain at the microphone, not the
+Bose knob percentage or calibrated dB SPL. Keep speaker/microphone positions
+unchanged between comparisons; low-frequency room modes still affect readings.
+Two of three bands must pass averaged coherence and reference-strength checks;
+clipping, interrupted playback or audio queue loss invalidates the result. Quiet
+or distorted measurements may be refused. Silent sections estimate stationary
+tonal background; the analysis excludes the first 320 ms of tone onset/decay.
+Measurement is rejected while voice, reply/cue or announcement playback is busy.
+It does not require a Sendspin stream and plays even if the player is muted or
+set to zero.
+No new task or continuous DSP is added. Captured audio is erased after analysis;
+only the browser comparison's numeric reference is stored in the browser; it is
+independent of the maximum reference stored by the HA package. Like the existing diagnostics,
+this is an unauthenticated LAN endpoint; the POST requires `X-Johan2-Probe: 1` and
+no cross-origin access is enabled. `POST /bose/measure` returns numeric JSON for
+local diagnostics. Test PCM peaks at 128 out of 32768 after the common output
+attenuation, independently of both the player volume/mute and the configured
+direct-reply gain. The actual DAC reference is used for normalization.
+
 Enable `JOHAN2_MIC_AEC` and `JOHAN2_MIC_DIAGNOSTICS` in menuconfig, then build
 and flash via `./scripts/idf.sh`. AEC is experimental and off by default. The local
 ignored sdkconfig enables it with fixed mic gain 4 and automatic gain disabled.
@@ -453,6 +523,19 @@ AEC runs before high-pass, optional profile denoising, and gain/clipping. It use
 512-sample (32 ms) frames and 16 ms reference lookahead; frame assembly and lookahead
 add latency. Missing/stale references bypass cancellation for that frame. Queue
 losses discard incomplete microphone frames and are counted in diagnostics.
+
+The Bose/AUX speaker's own volume is outside this digital reference. Its setting
+and the player's percentage together determine room loudness; the player percentage
+alone is not a sound-level measurement. Normal volume changes retain the AEC
+instance and its learned state. A fixed Bose volume is not a requirement: validate
+both player-volume and speaker-volume changes, including the first wake attempt
+immediately after a change and later attempts after several seconds. Also compare
+similar room loudness with a quieter Bose/higher player volume and the reverse.
+Keep the music and speaking position comparable, count missed wakes separately
+from command failures, and observe music-only periods for false activations.
+The configured reference delay is a timing alignment, not a speaker-volume
+calibration. These tests cannot establish operation at arbitrarily loud levels;
+speaker distortion or microphone clipping still limits echo cancellation.
 
 Start music at the troublesome volume and let it play for a few seconds. Capture:
 

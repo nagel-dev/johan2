@@ -11,6 +11,8 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "speaker_probe.h"
+#include "speaker_probe_page.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -18,8 +20,9 @@ namespace {
 constexpr size_t SAMPLE_COUNT = 16000 * 15;
 enum State { Idle, Recording, Ready };
 std::atomic<State> state{Idle};
-enum Mode { Mono, Compare, Aec };
-Mode mode = Mono, compare_mode = Compare, aec_mode = Aec;
+enum Mode { Mono, Compare, Aec, Probe };
+Mode mode = Mono, compare_mode = Compare, aec_mode = Aec, probe_mode = Probe;
+std::atomic<mic_diagnostics::SpeakerProbeState> probe_state{mic_diagnostics::SpeakerProbeState::Idle};
 std::atomic<bool> aec_ready{false};
 #if CONFIG_JOHAN2_MIC_AEC
 std::atomic<int> requested_delay{CONFIG_JOHAN2_MIC_AEC_DELAY_MS};
@@ -47,9 +50,26 @@ esp_err_t record(httpd_req_t* req) {
     if (!buffer) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No recording RAM");
     mode = req->user_ctx ? *static_cast<Mode*>(req->user_ctx) : Mono;
     const bool compare = mode == Compare;
-    if (mode == Aec && !aec_ready.load()) {
+    if ((mode == Aec || mode == Probe) && !aec_ready.load()) {
         httpd_resp_set_status(req, "503 Service Unavailable");
         return httpd_resp_sendstr(req, "AEC unavailable: enable JOHAN2_MIC_AEC and check initialization");
+    }
+    if (mode == Probe) {
+        char confirmation[8]{};
+        if (httpd_req_get_hdr_value_str(req, "X-Johan2-Probe", confirmation, sizeof(confirmation)) != ESP_OK || strcmp(confirmation, "1"))
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Use the Bose measurement page");
+        probe_state.store(mic_diagnostics::SpeakerProbeState::Requested);
+        const int64_t deadline = esp_timer_get_time() + 2000000;
+        while (probe_state.load() == mic_diagnostics::SpeakerProbeState::Requested && esp_timer_get_time() < deadline)
+            vTaskDelay(pdMS_TO_TICKS(10));
+        auto pending = mic_diagnostics::SpeakerProbeState::Requested;
+        probe_state.compare_exchange_strong(pending, mic_diagnostics::SpeakerProbeState::Idle);
+        if (probe_state.load() != mic_diagnostics::SpeakerProbeState::Playing) {
+            probe_state.store(mic_diagnostics::SpeakerProbeState::Idle);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_status(req, "409 Conflict");
+            return httpd_resp_sendstr(req, "{\"valid\":false,\"reason\":\"busy\"}");
+        }
     }
     // The normal download is mono Assist input, suitable for ordinary players.
     // Explicit channel=all preserves the simultaneous four-channel diagnostic.
@@ -94,6 +114,27 @@ esp_err_t record(httpd_req_t* req) {
         if (esp_timer_get_time() - started > 20000000)
             return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Capture stalled; no WAV available");
         vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    if (mode == Probe) {
+        const auto measured = analyze_speaker_probe(reinterpret_cast<const int16_t*>(buffer), captured, [] { vTaskDelay(1); });
+        const bool valid = measured.valid && probe_state.load() == mic_diagnostics::SpeakerProbeState::Done &&
+            !read_errors && aec_final[3] == aec_initial[3] && aec_final[4] == aec_initial[4];
+        char json[1024];
+        snprintf(json, sizeof(json),
+            "{\"valid\":%s,\"reason\":\"%s\",\"duration_ms\":%lld,\"clipped\":%u,\"bands\":["
+            "{\"hz\":93.75,\"gain_db\":%.3f,\"coherence\":%.4f,\"windows\":%u,\"valid\":%s},"
+            "{\"hz\":156.25,\"gain_db\":%.3f,\"coherence\":%.4f,\"windows\":%u,\"valid\":%s},"
+            "{\"hz\":218.75,\"gain_db\":%.3f,\"coherence\":%.4f,\"windows\":%u,\"valid\":%s}]}",
+            valid ? "true" : "false", valid ? "ok" : "unreliable", static_cast<long long>(elapsed / 1000), measured.clipped,
+            measured.bands[0].gain_db, measured.bands[0].coherence, measured.bands[0].windows, measured.bands[0].valid ? "true" : "false",
+            measured.bands[1].gain_db, measured.bands[1].coherence, measured.bands[1].windows, measured.bands[1].valid ? "true" : "false",
+            measured.bands[2].gain_db, measured.bands[2].coherence, measured.bands[2].windows, measured.bands[2].valid ? "true" : "false");
+        memset(buffer, 0, BUFFER_BYTES);
+        state.store(Idle, std::memory_order_release);
+        probe_state.store(mic_diagnostics::SpeakerProbeState::Idle);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        return httpd_resp_sendstr(req, json);
     }
     double squares = 0;
     int peak = 0;
@@ -166,7 +207,18 @@ esp_err_t record(httpd_req_t* req) {
     if (result == ESP_OK) result = httpd_resp_send_chunk(req, nullptr, 0);
     return result;
 }
+esp_err_t speaker_page(httpd_req_t* req) {
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, kSpeakerProbePage);
 }
+}
+mic_diagnostics::SpeakerProbeState mic_diagnostics::speaker_probe_state() { return probe_state.load(); }
+bool mic_diagnostics::claim_speaker_probe() {
+    auto expected = SpeakerProbeState::Requested;
+    return probe_state.compare_exchange_strong(expected, SpeakerProbeState::Playing);
+}
+void mic_diagnostics::set_speaker_probe_state(SpeakerProbeState value) { probe_state.store(value); }
 int mic_diagnostics::aec_delay_ms() { return requested_delay.load(); }
 void mic_diagnostics::start() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -183,7 +235,17 @@ void mic_diagnostics::start() {
     uri.method = HTTP_GET;
     uri.handler = record;
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri));
+    uri.uri = "/bose";
+    uri.user_ctx = nullptr;
+    uri.handler = speaker_page;
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri));
+    uri.uri = "/bose/measure";
+    uri.method = HTTP_POST;
+    uri.user_ctx = &probe_mode;
+    uri.handler = record;
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri));
     uri.uri = "/mic-compare.wav";
+    uri.method = HTTP_GET;
     uri.user_ctx = &compare_mode;
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri));
     uri.uri = "/mic-aec.wav";
@@ -205,7 +267,7 @@ void mic_diagnostics::feed(const int32_t* raw, const int16_t* pcm, size_t count,
     if (last_block) max_interval = std::max(max_interval, now - last_block);
     last_block = now;
     const size_t take = std::min(count, SAMPLE_COUNT - captured);
-    if (mode == Aec) {
+    if (mode == Aec || mode == Probe) {
         auto* frames = reinterpret_cast<int16_t*>(buffer);
         for (size_t i = 0; i < take; ++i) {
             frames[(captured + i) * 4] = static_cast<int16_t>(raw[i] / 65536);
@@ -223,7 +285,9 @@ void mic_diagnostics::feed(const int32_t* raw, const int16_t* pcm, size_t count,
         memcpy(buffer + captured * sizeof(int16_t), pcm, take * sizeof(int16_t));
     }
     captured += take;
-    if (captured == SAMPLE_COUNT) {
+    const bool probe_finished = mode == Probe && captured >= 16000 &&
+        probe_state.load() != SpeakerProbeState::Playing;
+    if (captured == SAMPLE_COUNT || probe_finished) {
         for (size_t i = 0; i < 5; ++i) aec_final[i] = aec_counters[i].load();
         elapsed = now - started;
         state.store(Ready, std::memory_order_release);
@@ -239,6 +303,9 @@ void mic_diagnostics::aec_status(bool ready, uint32_t frames, uint32_t missing, 
     aec_counters[4].store(microphone_drops);
 }
 #else
+mic_diagnostics::SpeakerProbeState mic_diagnostics::speaker_probe_state() { return SpeakerProbeState::Idle; }
+bool mic_diagnostics::claim_speaker_probe() { return false; }
+void mic_diagnostics::set_speaker_probe_state(SpeakerProbeState) {}
 void mic_diagnostics::start() {}
 int mic_diagnostics::aec_delay_ms() {
 #if CONFIG_JOHAN2_MIC_AEC

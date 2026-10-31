@@ -13,12 +13,13 @@ class AudioOutput;
 // Fetches an HA TTS WAV over HTTP and plays it through AudioOutput.
 class TtsPlayer {
 public:
-    enum Result { None = 0, Ok, Unsupported, Failed, CueDone };
+    enum Result { None = 0, Ok, Unsupported, Failed, CueDone, ProbeDone, ProbeFailed };
     void init(AudioOutput& audio);
     // Returns false if a request is already running.
     bool start(const std::string& url);
     // Uses the same single playback task/buffer as replies; never overlaps them.
     bool start_listening_cue(bool ending = false);
+    bool start_speaker_probe();
     // Stops playback early; poll() then reports Ok.
     void cancel();
     // Returns the finished request's result once, then None.
@@ -29,6 +30,7 @@ private:
     static esp_err_t http_event(esp_http_client_event_t* event);
     Result play();
     Result play_listening_cue();
+    Result play_speaker_probe();
     bool feed_samples(const uint8_t* data, size_t length);
     bool emit(int32_t left, int32_t right);
     bool flush();
@@ -42,6 +44,7 @@ private:
     std::string url_;
     bool cue_{false}; // Published by task notification, owned until busy_ clears.
     bool cue_ending_{false};
+    bool probe_{false};
     // Decoder and resampler state (task only).
     bool decode(uint8_t* data, size_t length);
     void* decoder_{nullptr};

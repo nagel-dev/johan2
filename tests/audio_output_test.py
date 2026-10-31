@@ -63,7 +63,7 @@ struct AudioOutput {
     bool write_tts_locked(const void*, size_t, size_t&);
     size_t load_tts_locked(size_t);
     void consume_tts_locked(size_t);
-    bool tts_write(const int16_t*, size_t, const std::atomic<bool>&);
+    bool tts_write(const int16_t*, size_t, const std::atomic<bool>&, int gain = CONFIG_JOHAN2_TTS_VOLUME);
     bool tts_drain(uint32_t);
     void tts_end();
     void on_stream_start();
@@ -141,6 +141,25 @@ int main() {
     assert(delivered == expected);
 
     delivered.clear();
+    AudioOutput gain_test;
+    gain_test.active_.store(false);
+    int16_t tone[4]{256, -256, 128, -128};
+    cancel.store(false);
+    assert(gain_test.tts_write(tone, 2, cancel, 100));
+    int16_t half_tone[4]{128, -128, 64, -64};
+    assert(delivered.size() == sizeof(half_tone) && memcmp(delivered.data(), half_tone, sizeof(half_tone)) == 0);
+    delivered.clear();
+    assert(gain_test.tts_write(tone, 2, cancel, 50));
+    int16_t quarter_tone[4]{64, -64, 32, -32};
+    assert(delivered.size() == sizeof(quarter_tone) && memcmp(delivered.data(), quarter_tone, sizeof(quarter_tone)) == 0);
+
+    delivered.clear();
+    int16_t extremes[4]{32767, -32768, 32767, -32768};
+    assert(gain_test.tts_write(extremes, 2, cancel, 100));
+    int16_t half_extremes[4]{16383, -16384, 16383, -16384};
+    assert(delivered.size() == sizeof(half_extremes) && memcmp(delivered.data(), half_extremes, sizeof(half_extremes)) == 0);
+
+    delivered.clear();
     AudioOutput reset;
     reset.queue = expected;
     limits = {0};
@@ -166,9 +185,24 @@ int main() {
         int16_t actual, spoken;
         memcpy(&actual, delivered.data() + i * 2, 2);
         memcpy(&spoken, expected.data() + i * 2, 2);
-        assert(actual == spoken + 400);
+        assert(actual == spoken + 200);
     }
-    std::cout << "Audio output partial/zero writes, fallback, drain, cancellation, reset and ducking passed\n";
+
+    delivered.clear();
+    AudioOutput music_only;
+    music_only.volume_.store(100);
+    music_only.tts_running_.store(false);
+    assert(music_only.on_audio_write(reinterpret_cast<uint8_t*>(extremes), sizeof(extremes), 20) == sizeof(extremes));
+    assert(delivered.size() == sizeof(half_extremes) && memcmp(delivered.data(), half_extremes, sizeof(half_extremes)) == 0);
+
+    delivered.clear();
+    AudioOutput peak_mix;
+    peak_mix.volume_.store(100);
+    peak_mix.queue.assign(reinterpret_cast<uint8_t*>(half_extremes),
+                          reinterpret_cast<uint8_t*>(half_extremes) + sizeof(half_extremes));
+    assert(peak_mix.on_audio_write(reinterpret_cast<uint8_t*>(extremes), sizeof(extremes), 20) == sizeof(extremes));
+    assert(delivered.size() == sizeof(half_extremes) && memcmp(delivered.data(), half_extremes, sizeof(half_extremes)) == 0);
+    std::cout << "Audio output half-level paths, mixed peaks, partial writes, cancellation and ducking passed\n";
 }
 """
 with tempfile.TemporaryDirectory(prefix="johan2-audio-test-") as directory:

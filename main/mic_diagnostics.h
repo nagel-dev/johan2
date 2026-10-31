@@ -3,6 +3,10 @@
 #include <cstdint>
 
 namespace mic_diagnostics {
+enum class SpeakerProbeState { Idle, Requested, Playing, Done, Rejected, Failed };
+SpeakerProbeState speaker_probe_state();
+bool claim_speaker_probe();
+void set_speaker_probe_state(SpeakerProbeState state);
 void start();
 int aec_delay_ms();
 // Called only from the capture task; no networking or allocation here.

@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include "audio_output.h"
 #include "listening_cue.h"
+#include "speaker_probe.h"
 #include "esp_audio_simple_dec.h"
 #include "esp_audio_simple_dec_default.h"
 #include "esp_audio_dec_default.h"
@@ -33,6 +34,7 @@ bool TtsPlayer::start(const std::string& url) {
     if (!busy_.compare_exchange_strong(expected, true)) return false;
     url_ = url;
     cue_ = false;
+    probe_ = false;
     result_.store(None);
     cancel_.store(false);
     xTaskNotifyGive(task_);
@@ -44,7 +46,20 @@ bool TtsPlayer::start_listening_cue(bool ending) {
     bool expected = false;
     if (!busy_.compare_exchange_strong(expected, true)) return false;
     cue_ = true;
+    probe_ = false;
     cue_ending_ = ending;
+    result_.store(None);
+    cancel_.store(false);
+    xTaskNotifyGive(task_);
+    return true;
+}
+
+bool TtsPlayer::start_speaker_probe() {
+    if (!task_) return false;
+    bool expected = false;
+    if (!busy_.compare_exchange_strong(expected, true)) return false;
+    probe_ = true;
+    cue_ = false;
     result_.store(None);
     cancel_.store(false);
     xTaskNotifyGive(task_);
@@ -82,10 +97,25 @@ void TtsPlayer::task(void* context) {
     auto& self = *static_cast<TtsPlayer*>(context);
     while (true) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        const Result result = self.cue_ ? self.play_listening_cue() : self.play();
+        const Result result = self.probe_ ? self.play_speaker_probe() : self.cue_ ? self.play_listening_cue() : self.play();
         self.result_.store(result);
         self.busy_.store(false);
     }
+}
+
+TtsPlayer::Result TtsPlayer::play_speaker_probe() {
+    bool ok = !cancel_.load() && audio_->tts_begin();
+    if (ok) {
+        for (size_t offset = 0; offset < SpeakerProbePcm::kFrames && ok;) {
+            const size_t frames = SpeakerProbePcm::render(out_, offset, 512, SpeakerProbePcm::kAmplitude);
+            ok = !cancel_.load() && audio_->tts_write(out_, frames, cancel_, 100);
+            offset += frames;
+        }
+        ok = ok && !cancel_.load() && audio_->tts_drain(1000);
+        audio_->tts_end();
+    }
+    cancel_.store(false);
+    return ok ? ProbeDone : ProbeFailed;
 }
 
 TtsPlayer::Result TtsPlayer::play_listening_cue() {

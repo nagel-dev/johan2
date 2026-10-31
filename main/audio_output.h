@@ -28,7 +28,8 @@ public:
     // Direct reply playback (called from the TTS task): 48 kHz, stereo, 16-bit frames.
     // Mixed over music when Sendspin is streaming; otherwise written straight to I2S.
     bool tts_begin();
-    bool tts_write(const int16_t* frames, size_t frame_count, const std::atomic<bool>& cancel);
+    bool tts_write(const int16_t* frames, size_t frame_count, const std::atomic<bool>& cancel,
+                   int gain = CONFIG_JOHAN2_TTS_VOLUME);
     bool tts_drain(uint32_t timeout_ms);
     void tts_end();
 private:

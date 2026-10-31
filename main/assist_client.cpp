@@ -14,6 +14,7 @@
 #include "esp_wifi.h"
 #include "esp_heap_caps.h"
 #include "audio_output.h"
+#include "mic_diagnostics.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
@@ -161,6 +162,12 @@ static bool is_stt_artifact(const std::string& text) {
 }
 
 void AssistClient::cancel_command(bool stop_playback) {
+#if CONFIG_JOHAN2_MIC_DIAGNOSTICS && CONFIG_JOHAN2_MIC_AEC
+    if (speaker_probe_active_) {
+        tts_.cancel();
+        mic_diagnostics::set_speaker_probe_state(mic_diagnostics::SpeakerProbeState::Failed);
+    }
+#endif
     wake_handoff_ = false;
     followup_ = false;
     followup_deadline_ = 0;
@@ -309,6 +316,12 @@ void AssistClient::run() {
             publish_state("error");
             cancel_local_announcement();
             reset_audio();
+#if CONFIG_JOHAN2_MIC_DIAGNOSTICS && CONFIG_JOHAN2_MIC_AEC
+            if (speaker_probe_active_) {
+                tts_.cancel();
+                mic_diagnostics::set_speaker_probe_state(mic_diagnostics::SpeakerProbeState::Failed);
+            }
+#endif
             // Must be called outside the WebSocket callback/task.
             esp_websocket_client_stop(socket_);
             protocol_.reset();
@@ -324,6 +337,12 @@ void AssistClient::run() {
             if (message.type == WEBSOCKET_EVENT_CONNECTED || message.type == WEBSOCKET_EVENT_DISCONNECTED) {
                 cancel_local_announcement();
                 reset_audio();
+#if CONFIG_JOHAN2_MIC_DIAGNOSTICS && CONFIG_JOHAN2_MIC_AEC
+                if (speaker_probe_active_) {
+                    tts_.cancel();
+                    mic_diagnostics::set_speaker_probe_state(mic_diagnostics::SpeakerProbeState::Failed);
+                }
+#endif
                 protocol_.reset();
                 remote_start_pending_ = followup_ = wake_handoff_ = false;
                 followup_deadline_ = 0;
@@ -406,6 +425,7 @@ void AssistClient::run() {
                         remote_start_pending_ = true;
                         reset_audio();
                         cancel_local_announcement();
+                        if (speaker_probe_active_) tts_.cancel();
                         if (direct_playing_) tts_.cancel();
                         if (protocol_.stop_running && !send_text(protocol_.cancel_stop())) transport_failed_.store(true);
                         if (protocol_.running && !send_text(protocol_.cancel_run())) transport_failed_.store(true);
@@ -415,7 +435,7 @@ void AssistClient::run() {
                     }
                 } else if (result == AssistProtocol::Event::RemoteCancel) {
                     if (protocol_.command_active || remote_start_pending_ || strcmp(assist_state_, "starting") == 0 ||
-                        direct_playing_ || !local_announcement_token_.empty()) {
+                        direct_playing_ || speaker_probe_active_ || !local_announcement_token_.empty()) {
                         const bool was_listening = protocol_.command_active && protocol_.streaming;
                         ESP_LOGI(TAG, "Cancelled by button");
                         cancel_command(true);
@@ -551,7 +571,7 @@ void AssistClient::run() {
                 } else if (protocol_.stop_streaming && !transport_failed_.load()) {
                     accepting_.store(true); // reset_audio() above must not silence the stop listener
                 }
-                command_active_.store(protocol_.music_muted || wake_handoff_);
+                command_active_.store(protocol_.music_muted || wake_handoff_ || speaker_probe_active_);
             }
         }
         const int64_t now = esp_timer_get_time();
@@ -612,6 +632,47 @@ void AssistClient::run() {
             cancel_command(false);
             request_listening_cue(true);
         }
+#if CONFIG_JOHAN2_MIC_DIAGNOSTICS && CONFIG_JOHAN2_MIC_AEC
+        if (mic_diagnostics::speaker_probe_state() == mic_diagnostics::SpeakerProbeState::Requested) {
+            const bool busy = !protocol_.authenticated || protocol_.command_active || remote_start_pending_ ||
+                direct_playing_ || speaker_probe_active_ || protocol_.announcement_pending ||
+                !local_announcement_token_.empty() || !deferred_reply_.empty() || cue_.blocked(now) || !audio_
+#ifdef CONFIG_JOHAN2_HOMEDASH_SYNC
+                || !protocol_.owns_voice
+#endif
+                ;
+            if (busy) {
+                mic_diagnostics::set_speaker_probe_state(mic_diagnostics::SpeakerProbeState::Rejected);
+            } else if (mic_diagnostics::claim_speaker_probe()) {
+                reset_audio();
+                if (protocol_.running && !send_text(protocol_.cancel_run())) transport_failed_.store(true);
+                if (protocol_.stop_running && !send_text(protocol_.cancel_stop())) transport_failed_.store(true);
+                if (!transport_failed_.load() && tts_.start_speaker_probe()) {
+                    speaker_probe_active_ = true;
+                    speaker_probe_until_ = now + 12000000;
+                    command_active_.store(true);
+                    ESP_LOGI(TAG, "Speaker bass probe started");
+                } else {
+                    mic_diagnostics::set_speaker_probe_state(mic_diagnostics::SpeakerProbeState::Failed);
+                }
+            }
+        }
+        if (speaker_probe_active_) {
+            const auto result = tts_.poll();
+            if (result != TtsPlayer::None) {
+                const bool ok = result == TtsPlayer::ProbeDone &&
+                    mic_diagnostics::speaker_probe_state() == mic_diagnostics::SpeakerProbeState::Playing;
+                mic_diagnostics::set_speaker_probe_state(ok ? mic_diagnostics::SpeakerProbeState::Done : mic_diagnostics::SpeakerProbeState::Failed);
+                speaker_probe_active_ = false;
+                command_active_.store(protocol_.music_muted);
+                retry_at_ = std::max(retry_at_, now + 300000);
+                ESP_LOGI(TAG, "Speaker bass probe %s", ok ? "finished" : "failed/cancelled");
+            } else if (now >= speaker_probe_until_) {
+                tts_.cancel();
+                mic_diagnostics::set_speaker_probe_state(mic_diagnostics::SpeakerProbeState::Failed);
+            }
+        }
+#endif
         if (direct_playing_) {
             const auto result = tts_.poll();
             if (result != TtsPlayer::None) {
@@ -668,7 +729,7 @@ void AssistClient::run() {
             if (now >= local_announcement_deadline_) {
                 ESP_LOGW(TAG, "Local announcement expired while waiting for voice playback");
                 finish_local_announcement(false);
-            } else if (!protocol_.command_active && !protocol_.announcement_pending && !remote_start_pending_ && !wake_handoff_ &&
+            } else if (!protocol_.command_active && !protocol_.announcement_pending && !remote_start_pending_ && !wake_handoff_ && !speaker_probe_active_ &&
                        !direct_playing_ && deferred_reply_.empty() && !cue_.blocked(now)) {
                 // Stop wake monitoring, not the Sendspin stream or its music queue.
                 if (protocol_.running && !send_text(protocol_.cancel_run())) transport_failed_.store(true);
@@ -702,7 +763,7 @@ void AssistClient::run() {
             true;
 #endif
         if (voice_allowed && protocol_.authenticated && !protocol_.running && !protocol_.announcement_pending &&
-            !direct_playing_ && (local_announcement_token_.empty() || wake_handoff_) && deferred_reply_.empty() &&
+            !direct_playing_ && !speaker_probe_active_ && (local_announcement_token_.empty() || wake_handoff_) && deferred_reply_.empty() &&
             (!cue_.blocked(now) || wake_handoff_) && now >= retry_at_) {
             // The wake handoff must initialize STT before the readiness cue ends.
             // Its audio/cue state was already reset when the wake run was cancelled.

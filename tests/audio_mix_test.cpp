@@ -22,5 +22,13 @@ int main() {
     assert(audio_mix::add(-30000, -30000) == -32768);
     assert(audio_mix::add(30000, -30000) == 0);
     assert(audio_mix::add(1200, 12000) == 13200);
+    for (int music : {-32768, -30000, -501, 0, 501, 30000, 32767}) {
+        for (int speech : {-32768, -30000, -501, 0, 501, 30000, 32767}) {
+            const auto actual = audio_mix::add_half_output(audio_mix::half_output(music), audio_mix::half_output(speech));
+            const auto expected = audio_mix::half_output(audio_mix::add(music, speech));
+            assert(actual >= -16384 && actual <= 16383);
+            assert(std::abs(actual - expected) <= 1);
+        }
+    }
     std::cout << "Audio mix tests passed\n";
 }

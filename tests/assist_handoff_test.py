@@ -56,6 +56,7 @@ struct AssistClient {
     int audio_queue_ = 0;
     bool wake_handoff_ = false, remote_start_pending_ = false, followup_ = false;
     bool followup_used_ = false, followup_speech_seen_ = false, direct_playing_ = false;
+    bool speaker_probe_active_ = false;
     unsigned followup_count_ = 0;
     int64_t wake_at_ = 0, conversation_last_ = 0, wake_tail_until_ = 0;
     int64_t retry_at_ = 0, followup_deadline_ = 0, run_deadline_ = 0;
