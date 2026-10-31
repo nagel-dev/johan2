@@ -93,11 +93,13 @@ menu "Johan2 Player Configuration"
             held during the cue and briefly afterward to keep it out of STT.
     config JOHAN2_WAKE_VAD
         bool "Gate idle wake-word audio with local WebRTC speech detection"
-        default y
+        default n
         help
             Retain 500 ms of audio locally, send it when speech starts, and keep
             sending for one second after speech. Commands, follow-ups and the
-            stop listener remain continuous. Disable to restore full streaming.
+            stop listener remain continuous. Disabled by default so quiet wake
+            words cannot be rejected by an additional local speech detector.
+            Full streaming uses about 32 kB/s of PCM on the LAN.
     config JOHAN2_HOMEDASH_SYNC
         bool "Synchronize Assist state and remote wake via Home Assistant"
         default n

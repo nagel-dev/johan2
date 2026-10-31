@@ -161,6 +161,7 @@ static bool is_stt_artifact(const std::string& text) {
 }
 
 void AssistClient::cancel_command(bool stop_playback) {
+    wake_handoff_ = false;
     followup_ = false;
     followup_deadline_ = 0;
     remote_start_pending_ = false;
@@ -311,7 +312,7 @@ void AssistClient::run() {
             // Must be called outside the WebSocket callback/task.
             esp_websocket_client_stop(socket_);
             protocol_.reset();
-            remote_start_pending_ = followup_ = false;
+            remote_start_pending_ = followup_ = wake_handoff_ = false;
             followup_deadline_ = 0;
             Message stale;
             while (xQueueReceive(messages_, &stale, 0) == pdTRUE) free(stale.text);
@@ -324,7 +325,7 @@ void AssistClient::run() {
                 cancel_local_announcement();
                 reset_audio();
                 protocol_.reset();
-                remote_start_pending_ = followup_ = false;
+                remote_start_pending_ = followup_ = wake_handoff_ = false;
                 followup_deadline_ = 0;
                 publish_state("offline");
                 ESP_LOGI(TAG, "%s", message.type == WEBSOCKET_EVENT_CONNECTED ? "HA connected" : "HA disconnected");
@@ -426,13 +427,23 @@ void AssistClient::run() {
                     wake_at_ = conversation_last_ = esp_timer_get_time();
                     followup_used_ = false;
                     followup_count_ = 0;
+                    // HA has already entered STT on the wake run. Its buffered audio
+                    // and warmed VAD cannot be removed by dropping future PCM here.
+                    // Cancel it and start clean STT while the tail/cue gate is closed.
+                    reset_audio();
+                    if (!send_text(protocol_.cancel_run())) transport_failed_.store(true);
+                    wake_handoff_ = remote_start_pending_ = true;
+                    retry_at_ = 0;
                     wake_tail_until_ = wake_at_ + kWakeTailUs;
                     request_listening_cue();
-                    ESP_LOGI(TAG, "Wake word detected; listening for command");
-                    publish_state("listening");
+                    ESP_LOGI(TAG, "Wake word detected; starting fresh command capture");
+                    publish_state("starting");
                 } else if (result == AssistProtocol::Event::Listening) {
-                    request_listening_cue();
-                    if (!wake_at_ || strcmp(assist_state_, "starting") == 0)
+                    const bool handoff = wake_handoff_;
+                    if (handoff) cue_.rebind_start(protocol_.run_id);
+                    else request_listening_cue();
+                    wake_handoff_ = false;
+                    if (!wake_at_ || (!handoff && strcmp(assist_state_, "starting") == 0))
                         wake_at_ = conversation_last_ = esp_timer_get_time();
                     if (followup_) followup_deadline_ = esp_timer_get_time() + kFollowupUs;
                     run_deadline_ = esp_timer_get_time() + 45000000;
@@ -495,6 +506,7 @@ void AssistClient::run() {
                     publish_state(success ? "idle" : "error");
                 } else if (result == AssistProtocol::Event::Error || result == AssistProtocol::Event::Finished ||
                            result == AssistProtocol::Event::Silent) {
+                    wake_handoff_ = false;
                     const bool failed = result == AssistProtocol::Event::Error;
                     // The action already ran; skip the pipeline's remaining TTS of the empty reply.
                     if (result == AssistProtocol::Event::Silent && !send_text(protocol_.cancel_run())) transport_failed_.store(true);
@@ -539,7 +551,7 @@ void AssistClient::run() {
                 } else if (protocol_.stop_streaming && !transport_failed_.load()) {
                     accepting_.store(true); // reset_audio() above must not silence the stop listener
                 }
-                command_active_.store(protocol_.music_muted);
+                command_active_.store(protocol_.music_muted || wake_handoff_);
             }
         }
         const int64_t now = esp_timer_get_time();
@@ -632,7 +644,7 @@ void AssistClient::run() {
             xQueueReset(audio_queue_);
         }
         if (cue_.pending && !cue_.playing) {
-            if ((!cue_.pending_end && (!protocol_.command_active || !protocol_.streaming)) || now >= cue_.wait_until) {
+            if ((!cue_.pending_end && !wake_handoff_ && (!protocol_.command_active || !protocol_.streaming)) || now >= cue_.wait_until) {
                 if (now >= cue_.wait_until) ESP_LOGW(TAG, "Listening cue skipped: playback task busy");
                 cue_.pending = false; // Never delay a command indefinitely for an old reply.
             } else if (now >= cue_.not_before && !direct_playing_ && tts_.start_listening_cue(cue_.pending_end)) {
@@ -656,7 +668,7 @@ void AssistClient::run() {
             if (now >= local_announcement_deadline_) {
                 ESP_LOGW(TAG, "Local announcement expired while waiting for voice playback");
                 finish_local_announcement(false);
-            } else if (!protocol_.command_active && !protocol_.announcement_pending && !remote_start_pending_ &&
+            } else if (!protocol_.command_active && !protocol_.announcement_pending && !remote_start_pending_ && !wake_handoff_ &&
                        !direct_playing_ && deferred_reply_.empty() && !cue_.blocked(now)) {
                 // Stop wake monitoring, not the Sendspin stream or its music queue.
                 if (protocol_.running && !send_text(protocol_.cancel_run())) transport_failed_.store(true);
@@ -690,9 +702,11 @@ void AssistClient::run() {
             true;
 #endif
         if (voice_allowed && protocol_.authenticated && !protocol_.running && !protocol_.announcement_pending &&
-            !direct_playing_ && local_announcement_token_.empty() && deferred_reply_.empty() &&
-            !cue_.blocked(now) && now >= retry_at_) {
-            reset_audio();
+            !direct_playing_ && (local_announcement_token_.empty() || wake_handoff_) && deferred_reply_.empty() &&
+            (!cue_.blocked(now) || wake_handoff_) && now >= retry_at_) {
+            // The wake handoff must initialize STT before the readiness cue ends.
+            // Its audio/cue state was already reset when the wake run was cancelled.
+            if (!wake_handoff_) reset_audio();
             // A pipeline that never starts must not leave the UI on "starting" for five minutes.
             run_deadline_ = now + 10000000;
             followup_speech_seen_ = false;
@@ -704,7 +718,7 @@ void AssistClient::run() {
             }
             if (!send_text(protocol_.begin(CONFIG_JOHAN2_HA_PIPELINE, (kDirectReplies || strlen(CONFIG_JOHAN2_HA_REPLY_PLAYER) > 0),
                                            conversation_id_, remote_start_pending_))) transport_failed_.store(true);
-            if (remote_start_pending_) wake_at_ = conversation_last_ = now;
+            if (remote_start_pending_ && !wake_handoff_) wake_at_ = conversation_last_ = now;
             remote_start_pending_ = false;
         }
         // Drain a small batch, then return to control events so stt-end stops promptly.

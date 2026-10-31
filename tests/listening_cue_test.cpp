@@ -34,6 +34,20 @@ int main() {
     assert(std::equal(chunks.begin(), chunks.end(), pcm.begin()));
 
     ListeningCueGate gate;
+    ListeningCueGate handoff;
+    assert(handoff.request(20, 1000, 601000));
+    handoff.rebind_start(22); // Fresh STT run replaces the wake run.
+    assert(handoff.pending && handoff.pending_run == 22);
+    assert(handoff.not_before == 601000 && handoff.blocked(600000));
+    assert(!handoff.request(22, 2000)); // STT-start must not replace/double the cue.
+    handoff.started();
+    handoff.rebind_start(22);
+    assert(!handoff.request(22, 3000) && handoff.playing);
+    handoff.finished(700000);
+    assert(!handoff.blocked(780000));
+    assert(handoff.request(22, 800000, 0, true)); // End cue belongs to the new run.
+    handoff.started();
+    assert(!handoff.request(22, 800001, 0, true));
     assert(!gate.blocked(0));
     assert(gate.request(7, 1000)); // Wake word.
     assert(!gate.request(7, 2000)); // stt-start of the same run must not beep twice.

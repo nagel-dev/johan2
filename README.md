@@ -266,6 +266,21 @@ reboot. Missing token leaves the player and microphone LED test functional.
 Firmware compilation and host protocol tests do not verify physical wake-word
 recognition, LAN connectivity or playback quality.
 
+Wake monitoring streams continuously by default (about 32 kB/s of PCM), without
+an extra local speech threshold before the server's wake-word detector. The
+optional `JOHAN2_WAKE_VAD` bandwidth-saving gate retains its 500 ms pre-roll and
+one-second tail, but can reject quiet speech and is disabled by default. Existing
+local configurations must disable it explicitly to use this baseline.
+
+After detection, Johan2 cancels the wake subscription and opens a fresh STT run
+with the same conversation. STT initializes while microphone delivery is held
+for the existing wake tail and start cue; both runs share a single high beep.
+This prevents wake-stage buffered audio and VAD history from ending command
+capture before the user speaks. Late events from the retired subscription are
+ignored. Remote starts and follow-ups still start directly at STT. This change
+targets a reproduced start/end/start sequence; recognition rates and the cause
+of each early ending still require physical checks with music off first.
+
 Microphone transport allows up to 250 ms for a WebSocket write and buffers at most
 512 ms of captured audio. Longer stalls still restart Assist rather than delivering
 stale commands. A failed write logs only byte counts, never captured audio.
@@ -296,6 +311,7 @@ c++ -std=c++17 -Wall -Wextra -Werror -I main \
   -I managed_components/bblanchon__arduinojson/src \
   tests/assist_protocol_test.cpp -o /tmp/johan2-assist-protocol-test
 /tmp/johan2-assist-protocol-test
+python3 tests/assist_handoff_test.py
 c++ -std=c++17 -Wall -Wextra -Werror -I main \
   -I managed_components/bblanchon__arduinojson/src \
   tests/announcement_protocol_test.cpp -o /tmp/johan2-announcement-protocol-test

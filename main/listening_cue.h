@@ -51,6 +51,11 @@ struct ListeningCueGate {
         playing_end = pending_end;
         if (playing_end) last_end_run = pending_run;
     }
+    // A detected wake opens a fresh STT run, but both runs share one start cue.
+    void rebind_start(int run_id) {
+        last_run = run_id;
+        if (pending && !pending_end) pending_run = run_id;
+    }
     void finished(int64_t now) { playing = false; resume_at = now + 80000; }
     void cancel(bool preserve_end = false) {
         if (!preserve_end || !pending_end) pending = false;

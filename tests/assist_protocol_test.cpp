@@ -5,6 +5,28 @@
 using Event = AssistProtocol::Event;
 int main() {
     AssistProtocol p;
+    // Retire wake audio/VAD before accepting a command. Delayed events from that
+    // subscription must not finish the new STT capture or supply a transcript.
+    AssistProtocol handoff;
+    handoff.begin("", true, "same-conversation");
+    handoff.receive(R"({"id":1,"type":"event","event":{"type":"run-start","data":{"runner_data":{"stt_binary_handler_id":7}}}})");
+    assert(handoff.receive(R"({"id":1,"type":"event","event":{"type":"wake_word-end","data":{"wake_word_output":{"wake_word_id":"hey_jarvis"}}}})") == Event::Wake);
+    JsonDocument rotated;
+    deserializeJson(rotated, handoff.cancel_run());
+    assert(rotated["subscription"] == 1 && !handoff.any_streaming());
+    assert(handoff.receive(R"({"id":1,"type":"event","event":{"type":"stt-start"}})") == Event::None);
+    deserializeJson(rotated, handoff.begin("", true, "same-conversation", true));
+    assert(rotated["id"] == 3 && rotated["start_stage"] == "stt");
+    assert(rotated["conversation_id"] == "same-conversation");
+    handoff.receive(R"({"id":3,"type":"event","event":{"type":"run-start","data":{"runner_data":{"stt_binary_handler_id":9}}}})");
+    assert(handoff.receive(R"({"id":3,"type":"event","event":{"type":"stt-start"}})") == Event::Listening);
+    for (const char* event : {"stt-vad-start", "stt-vad-end", "stt-end", "error", "run-end"}) {
+        const std::string stale = std::string(R"({"id":1,"type":"event","event":{"type":")") + event + R"("}})";
+        assert(handoff.receive(stale.c_str()) == Event::None);
+        assert(handoff.running && handoff.streaming && handoff.music_muted);
+        assert(!handoff.speech_started && handoff.transcript().empty());
+        assert(handoff.active_handler() == 9 && !handoff.gate_wake_audio());
+    }
     assert(p.receive(R"({"type":"auth_required"})") == Event::Authenticate);
     assert(!p.authenticated && !p.streaming);
     assert(p.receive(R"({"type":"auth_ok"})") == Event::Ready);
