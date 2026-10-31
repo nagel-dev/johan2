@@ -7,6 +7,10 @@ int main() {
         for (int sample : {-32768, -30000, -500, 0, 500, 30000, 32767}) {
             assert(audio_mix::music_sample(sample, gain, false) == sample * gain / 100);
             assert(audio_mix::music_sample(sample, gain, true) == sample * gain / 200);
+            assert(audio_mix::half_output(audio_mix::half_output(audio_mix::music_sample(sample, gain, false))) ==
+                   sample * gain / 400);
+            assert(audio_mix::half_output(audio_mix::half_output(audio_mix::music_sample(sample, gain, true))) ==
+                   sample * gain / 800);
         }
     }
     // Quiet player volumes still retain music underneath an announcement.

@@ -134,8 +134,10 @@ Assistant may show a new player entry. No flash erase is needed.
 - Initial volume is 35%; Music Assistant can change it. It is independent of
   the Arduino library's 0–21 scale.
 - Johan2 attenuates the complete DAC output to half its former amplitude,
-  including mixed music and speech, direct replies, cues and test tones. This
-  reduces the digital peak but does not guarantee a safe acoustic loudness.
+  including mixed music and speech, direct replies, cues and test tones.
+  Sendspin music is attenuated by an additional half, without changing direct
+  speech, cues or test tones. This reduces the digital peak but does not
+  guarantee a safe acoustic loudness.
 - Only FLAC and PCM at 48 kHz, stereo, 16-bit are advertised. Music Assistant
   handles source conversion. No direct Spotify login or Spotify Connect.
 - The partition table reserves a 6 MB factory app. USB flashing only; OTA is
@@ -214,10 +216,11 @@ detection. See the AEC test below. `JOHAN2_TTS_DIRECT` plays HA-generated MP3/WA
 replies through the local mixer. When it is disabled or a reply cannot be decoded,
 `JOHAN2_HA_REPLY_PLAYER` forwards the generated audio to that HA
 media player using `media_player.play_media` with `announce: true`; Music Assistant
-handles playback and restoration of the music queue through Sendspin. This
+handles playback and restoration of the music queue through Sendspin. Such
+fallback replies are attenuated like Sendspin music, unlike direct replies. This
 fallback is also permitted after decoder-buffer or HTTP-client allocation fails,
 without retaining a failed request's allocation. Firmware ducking ends before
-the reply so speech is not attenuated. Capture stays stopped
+the reply so fallback speech is not additionally ducked. Capture stays stopped
 while the announcement service request is pending, with a 90-second watchdog and
 no automatic announcement retry (to avoid duplicate replies). Without a reply
 player configured, commands still work but there are no spoken answers.

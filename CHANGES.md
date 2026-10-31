@@ -1,5 +1,10 @@
 # Changes
 
+## 2026-10-31 (quieter music)
+
+- Halve Sendspin audio again relative to the existing DAC attenuation, leaving direct Assist speech, local cues, and the Bose test tone unchanged. Music remains ducked during direct speech; fallback Assist replies sent through Music Assistant are also quieter because they share the Sendspin audio stream.
+- **Deployment** Built and flashed the firmware with verified write hashes; Johan2 is reachable after restart. The resulting audible levels still need a listening check.
+
 ## 2026-10-31 (half-level DAC output)
 
 - At the user's request, halve the complete Johan2 DAC signal: Sendspin music, direct replies, cues and Bose test tones, including music/speech mixes. Keep the final mixed peak within half digital full scale. The existing player and reply-volume controls remain in effect before this attenuation; the acoustic loudness is not guaranteed to be safe.

@@ -469,7 +469,7 @@ size_t AudioOutput::on_audio_write(uint8_t* data, size_t length, uint32_t timeou
     for (size_t i = 0; i < bytes / 2; ++i) {
         int16_t sample;
         memcpy(&sample, data + i * 2, sizeof(sample));
-        scratch_[i] = audio_mix::half_output(audio_mix::music_sample(sample, gain, tts));
+        scratch_[i] = audio_mix::half_output(audio_mix::half_output(audio_mix::music_sample(sample, gain, tts)));
     }
     if (tts) {
         const size_t got = load_tts_locked(bytes) / 2;

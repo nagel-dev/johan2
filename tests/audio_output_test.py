@@ -185,7 +185,7 @@ int main() {
         int16_t actual, spoken;
         memcpy(&actual, delivered.data() + i * 2, 2);
         memcpy(&spoken, expected.data() + i * 2, 2);
-        assert(actual == spoken + 200);
+        assert(actual == spoken + 100);
     }
 
     delivered.clear();
@@ -193,6 +193,27 @@ int main() {
     music_only.volume_.store(100);
     music_only.tts_running_.store(false);
     assert(music_only.on_audio_write(reinterpret_cast<uint8_t*>(extremes), sizeof(extremes), 20) == sizeof(extremes));
+    int16_t quarter_extremes[4]{8191, -8192, 8191, -8192};
+    assert(delivered.size() == sizeof(quarter_extremes) && memcmp(delivered.data(), quarter_extremes, sizeof(quarter_extremes)) == 0);
+
+    for (int volume : {0, 1, 5, 100}) {
+        delivered.clear();
+        music_only.volume_.store(volume);
+        assert(music_only.on_audio_write(reinterpret_cast<uint8_t*>(extremes), sizeof(extremes), 20) == sizeof(extremes));
+        for (size_t i = 0; i < 4; ++i) {
+            int16_t actual;
+            memcpy(&actual, delivered.data() + i * 2, 2);
+            assert(actual == static_cast<int32_t>(extremes[i]) * volume / 400);
+        }
+    }
+
+    delivered.clear();
+    AudioOutput muted;
+    muted.volume_.store(100);
+    muted.muted_.store(true);
+    muted.queue.assign(reinterpret_cast<uint8_t*>(half_extremes),
+                       reinterpret_cast<uint8_t*>(half_extremes) + sizeof(half_extremes));
+    assert(muted.on_audio_write(reinterpret_cast<uint8_t*>(extremes), sizeof(extremes), 20) == sizeof(extremes));
     assert(delivered.size() == sizeof(half_extremes) && memcmp(delivered.data(), half_extremes, sizeof(half_extremes)) == 0);
 
     delivered.clear();
@@ -202,7 +223,7 @@ int main() {
                           reinterpret_cast<uint8_t*>(half_extremes) + sizeof(half_extremes));
     assert(peak_mix.on_audio_write(reinterpret_cast<uint8_t*>(extremes), sizeof(extremes), 20) == sizeof(extremes));
     assert(delivered.size() == sizeof(half_extremes) && memcmp(delivered.data(), half_extremes, sizeof(half_extremes)) == 0);
-    std::cout << "Audio output half-level paths, mixed peaks, partial writes, cancellation and ducking passed\n";
+    std::cout << "Audio output reduced music, unchanged speech, mixed peaks, partial writes and ducking passed\n";
 }
 """
 with tempfile.TemporaryDirectory(prefix="johan2-audio-test-") as directory:
