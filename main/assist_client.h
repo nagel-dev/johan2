@@ -20,7 +20,7 @@ class AudioOutput;
 class AssistClient {
 public:
     static constexpr size_t SAMPLES = 256;
-    void start(AudioOutput* audio = nullptr);
+    void start(AudioOutput& audio);
     // Called by the microphone task: bounded queue copy, never waits for networking.
     void submit(const int16_t* samples, size_t count);
     bool command_active() const { return command_active_.load(); }

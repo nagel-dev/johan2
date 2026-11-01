@@ -34,6 +34,8 @@ struct AudioOutput {
     void tts_end() {}
 };
 static bool fail_allocation = false, fail_client = false, fail_fetch = false, bad_format = false;
+static std::atomic<bool>* cancel_on_read = nullptr;
+static std::atomic<bool>* cancel_on_cleanup = nullptr;
 static size_t outstanding = 0;
 static int reads = 0, closes = 0, cleanups = 0;
 static void* tracked_malloc(size_t size) {
@@ -59,6 +61,7 @@ static int open_tts_response(void*, const std::atomic<bool>& cancel) {
 }
 static int esp_http_client_get_status_code(void*) { return 200; }
 static int esp_http_client_read(void*, char* data, size_t capacity) {
+    if (cancel_on_read) cancel_on_read->store(true);
     assert(capacity >= 8);
     if (reads++) return 0;
     memcpy(data, bad_format ? "Nope...." : "RIFF....", 8);
@@ -71,9 +74,12 @@ static int esp_audio_simple_dec_open(esp_audio_simple_dec_cfg_t*, void** decoder
 }
 static void esp_audio_simple_dec_close(void*) {}
 static void esp_http_client_close(void*) { ++closes; }
-static void esp_http_client_cleanup(void*) { ++cleanups; }
+static void esp_http_client_cleanup(void*) {
+    ++cleanups;
+    if (cancel_on_cleanup) cancel_on_cleanup->store(true);
+}
 struct TtsPlayer {
-    enum Result { None, Ok, Unsupported, Failed, CueDone };
+    enum Result { None, Ok, Unsupported, Failed, CueDone, Cancelled };
     Result play();
     static esp_err_t http_event(esp_http_client_event_t*) { return ESP_OK; }
     bool decode(uint8_t*, size_t) { started_ = true; return true; }
@@ -99,7 +105,14 @@ int main() {
     fail_allocation = true;
     assert(player.play() == TtsPlayer::Unsupported);
     assert(!player.decoded_ && outstanding == 0);
+    player.cancel_.store(true);
+    assert(player.play() == TtsPlayer::Cancelled && !player.cancel_.load());
     fail_allocation = false;
+    fail_client = true;
+    player.cancel_.store(true);
+    assert(player.play() == TtsPlayer::Cancelled && !player.cancel_.load());
+    assert(!player.decoded_ && outstanding == 0);
+    fail_client = false;
     for (int i = 0; i < 1000; ++i) {
         fail_client = true;
         assert(player.play() == TtsPlayer::Unsupported);
@@ -115,9 +128,15 @@ int main() {
     assert(player.play() == TtsPlayer::Unsupported && outstanding == 0);
     bad_format = false;
     player.cancel_.store(true);
-    assert(player.play() == TtsPlayer::Ok && outstanding == 0);
+    assert(player.play() == TtsPlayer::Cancelled && outstanding == 0);
     assert(!player.cancel_.load());
-    assert(closes == 1003 && cleanups == closes);
+    cancel_on_read = &player.cancel_;
+    assert(player.play() == TtsPlayer::Cancelled && !player.cancel_.load());
+    cancel_on_read = nullptr;
+    cancel_on_cleanup = &player.cancel_;
+    assert(player.play() == TtsPlayer::Cancelled && !player.cancel_.load());
+    cancel_on_cleanup = nullptr;
+    assert(closes == 1005 && cleanups == closes);
     std::cout << "TTS allocation failure, HTTP initialization, recovery and cleanup tests passed\n";
 }
 """

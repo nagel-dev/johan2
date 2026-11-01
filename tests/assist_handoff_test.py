@@ -161,6 +161,19 @@ int main() {
     JsonDocument next;
     deserializeJson(next, silent.sent.back());
     assert(next["start_stage"] == "wake_word"); // Do not reopen command capture.
+    // A queued announcement must wait while a requested follow-up starts.
+    AssistClient followup;
+    followup.protocol_.authenticated = true;
+    followup.remote_start_pending_ = true;
+    followup.followup_ = true;
+    followup.local_announcement_token_ = "queued-notification";
+    assert(!followup.notification_ready());
+    followup.launch();
+    assert(followup.protocol_.running && !followup.remote_start_pending_);
+    JsonDocument followup_request;
+    deserializeJson(followup_request, followup.sent.back());
+    assert(followup_request["start_stage"] == "stt");
+    assert(followup.local_announcement_token_ == "queued-notification");
     // Remote starts and follow-ups enter STT without a wake handoff and always beep too.
     for (bool end_cue_enabled : {false, true}) {
         AssistClient direct;

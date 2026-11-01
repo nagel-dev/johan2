@@ -13,19 +13,21 @@ class AudioOutput;
 // Fetches an HA TTS WAV over HTTP and plays it through AudioOutput.
 class TtsPlayer {
 public:
-    enum Result { None = 0, Ok, Unsupported, Failed, CueDone, ProbeDone, ProbeFailed };
+    enum Result { None = 0, Ok, Unsupported, Failed, CueDone, ProbeDone, ProbeFailed, Cancelled };
     void init(AudioOutput& audio);
     // Returns false if a request is already running.
     bool start(const std::string& url);
     // Uses the same single playback task/buffer as replies; never overlaps them.
     bool start_listening_cue(bool ending = false);
     bool start_speaker_probe();
-    // Stops playback early; poll() then reports Ok.
+    // Stops playback early; a cancelled reply reports Cancelled.
     void cancel();
     // Returns the finished request's result once, then None.
     Result poll() { return static_cast<Result>(result_.exchange(None)); }
     // Unsupported: nothing was played, so the caller may fall back. Failed: audio may have played.
 private:
+    enum class Mode { Reply, StartCue, EndCue, Probe };
+    bool start_job(Mode mode, const std::string* url = nullptr);
     static void task(void* context);
     static esp_err_t http_event(esp_http_client_event_t* event);
     Result play();
@@ -42,9 +44,7 @@ private:
     std::mutex http_mutex_;
     int http_socket_{-1}; // Published/withdrawn by HTTP events before the socket closes.
     std::string url_;
-    bool cue_{false}; // Published by task notification, owned until busy_ clears.
-    bool cue_ending_{false};
-    bool probe_{false};
+    Mode mode_{Mode::Reply}; // Published by task notification, owned until busy_ clears.
     // Decoder and resampler state (task only).
     bool decode(uint8_t* data, size_t length);
     void* decoder_{nullptr};

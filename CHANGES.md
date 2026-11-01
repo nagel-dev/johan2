@@ -1,5 +1,22 @@
 # Changes
 
+## 2026-11-01 (Assist audio requirement)
+
+- Require an audio output when starting Assist, so the mandatory start cue always has a playback destination. `./scripts/idf.sh build` passed; physical playback remains unverified.
+
+## 2026-11-01 (follow-up priority)
+
+- Let a requested follow-up start while an announcement is queued; the announcement waits for the conversation instead of blocking it until expiry.
+
+## 2026-11-01 (playback job mode)
+
+- Represent reply, start cue, end cue and speaker probe as one playback mode and use one job-start path, eliminating conflicting mode flags.
+
+## 2026-11-01 (explicit reply cancellation)
+
+- Return a distinct cancelled result for interrupted direct replies; do not treat cancellation as successful playback or trigger a fallback reply. Timeout and local-announcement outcomes remain separately tracked.
+- Validation for the four simplifications: the handoff test covers a queued announcement and follow-up with both end-cue settings; playback checks cover mode selection, busy exclusion, allocation/HTTP failures and cancellation during reading and cleanup. The host harnesses ran without sanitizers because the host sanitizer runtime fails even for an empty program. `./scripts/idf.sh build` passed with ESP-IDF 6.0.1. The firmware has not been flashed or physically tested.
+
 ## 2026-11-01 (mandatory command-start cue)
 
 - **Firmware** Always request one start cue after wake detection, remote start and each follow-up. Initialize local cue playback even when direct TTS and the end cue are disabled. The existing `JOHAN2_LISTENING_CUE` option and HA helper now control only the end cue. If playback remains busy beyond the start-cue deadline, cancel the command instead of continuing silently.

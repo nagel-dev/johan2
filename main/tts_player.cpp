@@ -29,12 +29,15 @@ void TtsPlayer::init(AudioOutput& audio) {
 }
 
 bool TtsPlayer::start(const std::string& url) {
+    return start_job(Mode::Reply, &url);
+}
+
+bool TtsPlayer::start_job(Mode mode, const std::string* url) {
     if (!task_) return false;
     bool expected = false;
     if (!busy_.compare_exchange_strong(expected, true)) return false;
-    url_ = url;
-    cue_ = false;
-    probe_ = false;
+    if (url) url_ = *url;
+    mode_ = mode;
     result_.store(None);
     cancel_.store(false);
     xTaskNotifyGive(task_);
@@ -42,28 +45,11 @@ bool TtsPlayer::start(const std::string& url) {
 }
 
 bool TtsPlayer::start_listening_cue(bool ending) {
-    if (!task_) return false;
-    bool expected = false;
-    if (!busy_.compare_exchange_strong(expected, true)) return false;
-    cue_ = true;
-    probe_ = false;
-    cue_ending_ = ending;
-    result_.store(None);
-    cancel_.store(false);
-    xTaskNotifyGive(task_);
-    return true;
+    return start_job(ending ? Mode::EndCue : Mode::StartCue);
 }
 
 bool TtsPlayer::start_speaker_probe() {
-    if (!task_) return false;
-    bool expected = false;
-    if (!busy_.compare_exchange_strong(expected, true)) return false;
-    probe_ = true;
-    cue_ = false;
-    result_.store(None);
-    cancel_.store(false);
-    xTaskNotifyGive(task_);
-    return true;
+    return start_job(Mode::Probe);
 }
 
 void TtsPlayer::cancel() {
@@ -97,7 +83,8 @@ void TtsPlayer::task(void* context) {
     auto& self = *static_cast<TtsPlayer*>(context);
     while (true) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        const Result result = self.probe_ ? self.play_speaker_probe() : self.cue_ ? self.play_listening_cue() : self.play();
+        const Result result = self.mode_ == Mode::Probe ? self.play_speaker_probe() :
+            self.mode_ == Mode::Reply ? self.play() : self.play_listening_cue();
         self.result_.store(result);
         self.busy_.store(false);
     }
@@ -121,7 +108,7 @@ TtsPlayer::Result TtsPlayer::play_speaker_probe() {
 TtsPlayer::Result TtsPlayer::play_listening_cue() {
     if (!cancel_.load() && audio_->tts_begin()) {
         for (size_t offset = 0; offset < ListeningCuePcm::kFrames && !cancel_.load();) {
-            const size_t frames = ListeningCuePcm::render(out_, offset, 512, cue_ending_);
+            const size_t frames = ListeningCuePcm::render(out_, offset, 512, mode_ == Mode::EndCue);
             if (!audio_->tts_write(out_, frames, cancel_)) break;
             offset += frames;
         }
@@ -243,7 +230,7 @@ TtsPlayer::Result TtsPlayer::play() {
     decoded_ = static_cast<uint8_t*>(malloc(decoded_capacity_));
     if (!decoded_) {
         ESP_LOGW(TAG, "Cannot allocate reply decoder output");
-        return Unsupported;
+        return cancel_.exchange(false) ? Cancelled : Unsupported;
     }
     esp_http_client_config_t config{};
     config.url = url_.c_str();
@@ -257,7 +244,7 @@ TtsPlayer::Result TtsPlayer::play() {
         ESP_LOGW(TAG, "Cannot initialize reply HTTP client");
         free(decoded_);
         decoded_ = nullptr;
-        return Unsupported;
+        return cancel_.exchange(false) ? Cancelled : Unsupported;
     }
     Result result = Failed;
     const esp_err_t opened = open_tts_response(client, cancel_);
@@ -303,7 +290,7 @@ TtsPlayer::Result TtsPlayer::play() {
                 sniffed = 0;
             }
             if (cancelled) {
-                result = Ok;
+                result = Cancelled;
             } else if (ok && started_) {
                 result = flush() ? Ok : Failed;
             } else if (!started_) {
@@ -316,7 +303,7 @@ TtsPlayer::Result TtsPlayer::play() {
     } else {
         ESP_LOGW(TAG, "Reply fetch failed: %s", esp_err_to_name(opened));
     }
-    if (cancel_.load()) result = Ok;
+    if (cancel_.load()) result = Cancelled;
     if (started_) {
         if (!cancel_.load() && !audio_->tts_drain(1000)) {
             ESP_LOGW(TAG, "Reply audio mix did not drain");
@@ -324,13 +311,13 @@ TtsPlayer::Result TtsPlayer::play() {
         }
         audio_->tts_end();
     }
-    cancel_.store(false);
     if (decoder_) esp_audio_simple_dec_close(decoder_);
     decoder_ = nullptr;
     free(decoded_);
     decoded_ = nullptr;
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
+    if (cancel_.exchange(false)) result = Cancelled;
     ESP_LOGI(TAG, "Reply playback %s after %lld ms (%u Hz, %u ch)", result == Ok ? "finished" : "ended early",
              static_cast<long long>((esp_timer_get_time() - begin) / 1000), static_cast<unsigned>(rate_),
              static_cast<unsigned>(channels_));

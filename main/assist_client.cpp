@@ -38,15 +38,15 @@ static constexpr bool kStopListener =
     false;
 #endif
 
-void AssistClient::start(AudioOutput* audio) {
-    audio_ = audio;
+void AssistClient::start(AudioOutput& audio) {
+    audio_ = &audio;
     metrics_boot_id_ = esp_random();
     if (!strlen(CONFIG_JOHAN2_HA_TOKEN)) {
         ESP_LOGI(TAG, "Assist disabled: set HA token in local sdkconfig");
         return;
     }
     // Command starts always use the local cue, including builds with direct TTS disabled.
-    if (audio) tts_.init(*audio);
+    tts_.init(audio);
     if (!kDirectReplies && !strlen(CONFIG_JOHAN2_HA_REPLY_PLAYER)) {
         ESP_LOGW(TAG, "Spoken replies disabled: enable direct replies or set reply media_player in menuconfig");
     }
@@ -683,11 +683,12 @@ void AssistClient::run() {
                 // A fallback to the reply player is still coming, so this is not an error yet.
                 const bool falling_back = !local && !direct_timed_out_ && result == TtsPlayer::Unsupported &&
                                           strlen(CONFIG_JOHAN2_HA_REPLY_PLAYER);
-                if (!remote_start_pending_) publish_state(success ? "idle" : falling_back ? "speaking" : "error");
+                const bool cancelled = result == TtsPlayer::Cancelled && !direct_timed_out_;
+                if (!remote_start_pending_) publish_state(success || cancelled ? "idle" : falling_back ? "speaking" : "error");
                 if (local) {
                     finish_local_announcement(success);
                 } else {
-                    ESP_LOGI(TAG, "Direct reply %s %lld ms after audio ready", success ? "played" : "failed",
+                    ESP_LOGI(TAG, "Direct reply %s %lld ms after audio ready", success ? "played" : cancelled ? "cancelled" : "failed",
                              (long long)((now - speech_at_) / 1000));
                     if (falling_back) forward_to_player();
                 }
@@ -772,7 +773,7 @@ void AssistClient::run() {
             true;
 #endif
         if (voice_allowed && protocol_.authenticated && !protocol_.running && !protocol_.announcement_pending &&
-            !direct_playing_ && !speaker_probe_active_ && (local_announcement_token_.empty() || wake_handoff_) && deferred_reply_.empty() &&
+            !direct_playing_ && !speaker_probe_active_ && (local_announcement_token_.empty() || remote_start_pending_ || wake_handoff_) && deferred_reply_.empty() &&
             (!cue_.blocked(now) || wake_handoff_) && now >= retry_at_) {
             // The wake handoff must initialize STT before the readiness cue ends.
             // Its audio/cue state was already reset when the wake run was cancelled.

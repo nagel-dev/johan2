@@ -71,7 +71,7 @@ extern "C" void app_main() {
     auto& player = client.add_player(std::move(player_config));
     static AudioOutput audio;
     static AssistClient assist;
-    assist.start(&audio);
+    assist.start(audio);
     audio.init(player, &assist);
     mic_diagnostics::start();
     player.set_listener(&audio);
