@@ -1,5 +1,10 @@
 # Changes
 
+## 2026-11-01 (mandatory command-start cue)
+
+- **Firmware** Always request one start cue after wake detection, remote start and each follow-up. Initialize local cue playback even when direct TTS and the end cue are disabled. The existing `JOHAN2_LISTENING_CUE` option and HA helper now control only the end cue. If playback remains busy beyond the start-cue deadline, cancel the command instead of continuing silently.
+- **Validation** Assist handoff checks pass with the end cue compiled on/off and the HA helper on/off, covering wake/remote/follow-up starts, deduplication and busy-playback cancellation. Assist protocol, announcement protocol and listening-cue host checks pass; the handoff harness ran without sanitizers because this host's sanitizer runtime also crashes on an empty program. `./scripts/idf.sh build` passes with ESP-IDF 6.0.1. No flash or physical playback verification performed.
+
 ## 2026-10-31 (no retry after silence)
 
 - Treat HA's `stt-no-text-recognized` as the end of listening rather than an unclear command, so silence does not immediately trigger another listening cue. Keep one retry for recognized but unclear commands and preserve the listening-end cue.

@@ -25,7 +25,7 @@ static constexpr bool kDirectReplies =
 #else
     false;
 #endif
-static constexpr bool kListeningCue =
+static constexpr bool kEndCue =
 #ifdef CONFIG_JOHAN2_LISTENING_CUE
     true;
 #else
@@ -45,9 +45,8 @@ void AssistClient::start(AudioOutput* audio) {
         ESP_LOGI(TAG, "Assist disabled: set HA token in local sdkconfig");
         return;
     }
-#if CONFIG_JOHAN2_TTS_DIRECT || CONFIG_JOHAN2_LISTENING_CUE
+    // Command starts always use the local cue, including builds with direct TTS disabled.
     if (audio) tts_.init(*audio);
-#endif
     if (!kDirectReplies && !strlen(CONFIG_JOHAN2_HA_REPLY_PLAYER)) {
         ESP_LOGW(TAG, "Spoken replies disabled: enable direct replies or set reply media_player in menuconfig");
     }
@@ -199,7 +198,8 @@ void AssistClient::reset_audio(bool preserve_end_cue) {
 }
 
 void AssistClient::request_listening_cue(bool ending) {
-    if (!kListeningCue || !protocol_.listening_cue_enabled || !cue_.request(protocol_.run_id, esp_timer_get_time(), wake_tail_until_, ending)) return;
+    if (ending && (!kEndCue || !protocol_.end_cue_enabled)) return;
+    if (!cue_.request(protocol_.run_id, esp_timer_get_time(), wake_tail_until_, ending)) return;
     // Mute music before scheduling playback, including the first wake event.
     if (!ending) command_active_.store(true);
     xQueueReset(audio_queue_);
@@ -705,9 +705,18 @@ void AssistClient::run() {
             xQueueReset(audio_queue_);
         }
         if (cue_.pending && !cue_.playing) {
-            if ((!cue_.pending_end && !wake_handoff_ && (!protocol_.command_active || !protocol_.streaming)) || now >= cue_.wait_until) {
-                if (now >= cue_.wait_until) ESP_LOGW(TAG, "Listening cue skipped: playback task busy");
-                cue_.pending = false; // Never delay a command indefinitely for an old reply.
+            if (!cue_.pending_end && !wake_handoff_ && (!protocol_.command_active || !protocol_.streaming)) {
+                cue_.pending = false; // The command was already retired.
+            } else if (now >= cue_.wait_until) {
+                if (cue_.pending_end) {
+                    ESP_LOGW(TAG, "Listening end cue skipped: playback task busy");
+                    cue_.pending = false;
+                } else {
+                    ESP_LOGW(TAG, "Command cancelled: start cue playback task busy");
+                    cancel_command(false);
+                    retry_at_ = now + 1000000;
+                    publish_state("error");
+                }
             } else if (now >= cue_.not_before && !direct_playing_ && tts_.start_listening_cue(cue_.pending_end)) {
                 cue_.started();
                 ESP_LOGI(TAG, "Listening %s cue started", cue_.playing_end ? "end" : "start");

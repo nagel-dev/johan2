@@ -240,16 +240,16 @@ int main() {
     assert(owner.receive(R"({"id":1,"type":"event","event":{"r":["input_select.voice_device"]}})") == Event::OwnerChanged);
     assert(!owner.owns_voice);
     assert(command["entity_ids"][3] == "input_boolean.johan2_listening_cue");
-    assert(owner.listening_cue_enabled); // Beeps stay on until HA reports off.
+    assert(owner.end_cue_enabled); // Only the end cue follows the HA choice.
     assert(owner.receive(R"({"id":1,"type":"event","event":{"a":{"input_boolean.johan2_listening_cue":{"s":"off"}}}})") == Event::None);
-    assert(!owner.listening_cue_enabled);
+    assert(!owner.end_cue_enabled);
     owner.receive(R"({"id":1,"type":"event","event":{"c":{"input_boolean.johan2_listening_cue":{"+":{"s":"unavailable"}}}}})");
-    assert(!owner.listening_cue_enabled); // Transient unavailability keeps the last choice.
+    assert(!owner.end_cue_enabled); // Transient unavailability keeps the last choice.
     owner.receive(R"({"id":1,"type":"event","event":{"c":{"input_boolean.johan2_listening_cue":{"+":{"s":"on"}}}}})");
-    assert(owner.listening_cue_enabled);
+    assert(owner.end_cue_enabled);
     owner.receive(R"({"id":1,"type":"event","event":{"c":{"input_boolean.johan2_listening_cue":{"+":{"s":"off"}}}}})");
     owner.receive(R"({"id":1,"type":"event","event":{"r":["input_boolean.johan2_listening_cue"]}})");
-    assert(owner.listening_cue_enabled); // A removed helper restores the default.
+    assert(owner.end_cue_enabled); // A removed helper restores the end-cue default.
     deserializeJson(command, owner.heartbeat());
     assert(command["domain"] == "input_button" && command["service"] == "press");
     assert(command["target"]["entity_id"] == "input_button.johan2_voice_heartbeat");

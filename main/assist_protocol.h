@@ -8,7 +8,7 @@
 class AssistProtocol {
 public:
     enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, OwnerChanged, SyncError, WifiError, DiagnosticsError, LocalAnnouncement, LocalAnnouncementStop, LocalAnnouncementError, Transcript, SpeechReady, StopTranscript, PlaybackAccepted, PlaybackFailed, Silent, Finished, Error, AuthInvalid };
-    bool listening_cue_enabled = true; // Follows input_boolean.johan2_listening_cue; on until HA says off.
+    bool end_cue_enabled = true; // HA helper controls only the end cue; starts always beep.
     bool owns_voice = false; // Fail closed until HA grants this device voice ownership.
     bool authenticated = false;
     bool running = false;
@@ -311,11 +311,11 @@ public:
             if (cue.isNull()) cue = added["input_boolean.johan2_listening_cue"]["s"];
             if (cue.is<const char*>()) {
                 const std::string value = cue.as<std::string>();
-                if (value == "on") listening_cue_enabled = true;
-                else if (value == "off") listening_cue_enabled = false;
+                if (value == "on") end_cue_enabled = true;
+                else if (value == "off") end_cue_enabled = false;
             }
             for (JsonVariantConst removed : doc["event"]["r"].as<JsonArrayConst>())
-                if (removed.as<std::string>() == "input_boolean.johan2_listening_cue") listening_cue_enabled = true;
+                if (removed.as<std::string>() == "input_boolean.johan2_listening_cue") end_cue_enabled = true;
             if (cancel) return Event::RemoteCancel;
             if (previous_owner != owns_voice) return Event::OwnerChanged;
             return start ? Event::RemoteStart : Event::None;

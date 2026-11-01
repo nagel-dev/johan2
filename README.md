@@ -301,10 +301,10 @@ Microphone transport allows up to 250 ms for a WebSocket write and buffers at mo
 512 ms of captured audio. Longer stalls still restart Assist rather than delivering
 stale commands. A failed write logs only byte counts, never captured audio.
 
-By default, command listening has short local beeps (80 ms,
-`JOHAN2_LISTENING_CUE`): 1200 Hz when listening starts and a lower 600 Hz when
+Command listening always requests a short local start beep (80 ms, 1200 Hz).
+A lower 600 Hz end beep is controlled by `JOHAN2_LISTENING_CUE` and plays when
 command capture ends, including cancellation and follow-up silence timeout.
-The start beep plays once after Hey Jarvis, a remote start or each follow-up,
+The start beep is not configurable and plays once after Hey Jarvis, a remote start or each follow-up,
 through the existing DAC at the direct reply volume. It waits for
 the wake-word tail to be discarded first; speak after the beep. The microphone
 stream is held during playback and for 80 ms afterward to exclude cue/echo audio.
@@ -314,14 +314,15 @@ again instead of starting another listening attempt. A recognized but unclear
 command can still receive one retry.
 The cues share the reply playback task and music mixer; they cannot overlap a direct
 reply, which waits for the end cue to finish. If an interrupted reply does not
-release that task within 300 ms of cue
-readiness, the cue is skipped so listening can continue. Disable the option in
-menuconfig to restore silent command starts/ends. With `JOHAN2_HOMEDASH_SYNC`, the beeps can also be switched at runtime with
+release that task within 300 ms of start-cue readiness, the command is cancelled
+and an error is reported instead of continuing silently. An end cue may be skipped
+if playback remains busy. The menuconfig option controls only the end beep.
+With `JOHAN2_HOMEDASH_SYNC`, the end beep can also be switched at runtime with
 `input_boolean.johan2_listening_cue` (from HomeDash's `ha/packages/johan2_assist.yaml`; shown on
-HomeDash's Home screen). The helper starts off when first created: switch it on once.
-Only `off` mutes; a missing helper leaves the build default. During initial music-stream
-synchronization a cue can be dropped if the mixer does not consume it within
-250 ms; command handling remains bounded.
+HomeDash's Home screen). Only `off` mutes the end beep; a missing helper leaves
+the build default. Neither setting disables the start beep. Physical playback can
+still fail, including when the mixer cannot drain a cue during synchronization;
+firmware build and host checks do not establish audibility on the device.
 
 Host protocol check (requires the managed ArduinoJson component):
 

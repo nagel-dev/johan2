@@ -38,7 +38,7 @@ HARNESS = r'''
 #define ESP_LOGW(...) do {} while (0)
 #define CONFIG_JOHAN2_HA_PIPELINE ""
 #define CONFIG_JOHAN2_HA_REPLY_PLAYER ""
-constexpr bool kListeningCue = true, kDirectReplies = true;
+constexpr bool kEndCue = true, kDirectReplies = true;
 static int64_t clock_us = 1000;
 int64_t esp_timer_get_time() { return clock_us; }
 uint32_t esp_random() { return 42; }
@@ -87,10 +87,10 @@ void event(AssistClient& c, const char* kind, int handler = 7) {
         std::to_string(handler) + "}}}}";
     c.protocol_.receive(s.c_str());
 }
-AssistClient* prepare(bool cue_enabled) {
+AssistClient* prepare(bool end_cue_enabled) {
     auto* c = new AssistClient;
     c->protocol_.authenticated = true;
-    c->protocol_.listening_cue_enabled = cue_enabled;
+    c->protocol_.end_cue_enabled = end_cue_enabled;
     c->protocol_.begin("", true, "same-conversation");
     event(*c, "run-start");
     assert(c->protocol_.receive(R"({"id":1,"type":"event","event":{"type":"wake_word-end","data":{"wake_word_output":{"wake_word_id":"hey_jarvis"}}}})") == AssistProtocol::Event::Wake);
@@ -102,22 +102,22 @@ AssistClient* prepare(bool cue_enabled) {
     return c;
 }
 int main() {
-    for (bool cue_enabled : {false, true}) {
+    for (bool end_cue_enabled : {false, true}) {
         clock_us = 1000;
-        auto* c = prepare(cue_enabled);
+        auto* c = prepare(end_cue_enabled);
         // Pending notifications must neither steal nor deadlock command startup.
         c->local_announcement_token_ = "queued-notification";
         c->schedule_cue();
         assert(!c->notification_ready());
         c->launch();
         assert(c->protocol_.running && c->wake_handoff_ && !c->remote_start_pending_);
-        assert(!c->notification_ready()); // Especially with cues disabled and STT not ready yet.
+        assert(!c->notification_ready()); // STT is not ready yet.
         assert(c->local_announcement_token_ == "queued-notification");
         JsonDocument d; deserializeJson(d, c->sent.back());
         assert(d["start_stage"] == "stt" && d["conversation_id"] == "same-conversation");
-        assert(c->cue_.pending == cue_enabled); // launch must preserve the cue.
+        assert(c->cue_.pending); // Starts always beep, including when HA disables the end cue.
         c->schedule_cue(); // Also valid before the server's run-start/STT-start.
-        assert(c->cue_.pending == cue_enabled && c->tts_.starts == 0);
+        assert(c->cue_.pending && c->tts_.starts == 0);
         event(*c, "run-start", 9);
         event(*c, "stt-start");
         c->listening();
@@ -126,15 +126,15 @@ int main() {
         assert(!c->notification_ready());
         clock_us = 601000;
         c->schedule_cue();
-        assert(c->tts_.starts == int(cue_enabled));
+        assert(c->tts_.starts == 1);
         c->listening(); // Duplicate STT-start must not add a second beep.
         c->schedule_cue();
-        assert(c->tts_.starts == int(cue_enabled) && !c->cue_.pending);
+        assert(c->tts_.starts == 1 && !c->cue_.pending);
         c->cancel_command(false);
         assert(!c->wake_handoff_ && !c->protocol_.running && !c->remote_start_pending_);
         delete c;
         // Explicit cancellation while still between subscriptions must rearm idle.
-        c = prepare(cue_enabled);
+        c = prepare(end_cue_enabled);
         c->cancel_command(false);
         assert(!c->cue_.pending && !c->wake_handoff_ && !c->remote_start_pending_);
         assert(std::string(c->assist_state_) == "idle");
@@ -149,16 +149,45 @@ int main() {
     assert(!silent.followup_ && !silent.remote_start_pending_);
     assert(std::string(silent.assist_state_) == "idle");
     assert(silent.retry_at_ == clock_us + 250000);
-    assert(silent.cue_.pending && silent.cue_.pending_end);
+    assert(silent.cue_.pending == kEndCue);
     clock_us += 250000;
-    silent.launch();
-    assert(!silent.protocol_.running); // The end cue must complete before rearming.
-    silent.cue_.pending = false;
+    if (kEndCue) {
+        assert(silent.cue_.pending_end);
+        silent.launch();
+        assert(!silent.protocol_.running); // The end cue must complete before rearming.
+        silent.cue_.pending = false;
+    }
     silent.launch();
     JsonDocument next;
     deserializeJson(next, silent.sent.back());
     assert(next["start_stage"] == "wake_word"); // Do not reopen command capture.
-    puts("Assist handoff: fresh STT, one/no cue, early cancellation, queued notification and wake timing passed");
+    // Remote starts and follow-ups enter STT without a wake handoff and always beep too.
+    for (bool end_cue_enabled : {false, true}) {
+        AssistClient direct;
+        direct.protocol_.authenticated = true;
+        direct.protocol_.end_cue_enabled = end_cue_enabled;
+        direct.protocol_.begin("", true, "same-conversation", true);
+        event(direct, "run-start");
+        event(direct, "stt-start");
+        direct.listening();
+        assert(direct.cue_.pending && !direct.cue_.pending_end);
+        direct.schedule_cue();
+        assert(direct.tts_.starts == 1);
+    }
+    // A required start cue cannot turn into silent command capture when playback stays busy.
+    clock_us = 1000;
+    auto* busy = prepare(false);
+    busy->direct_playing_ = true;
+    clock_us = 601000;
+    busy->schedule_cue();
+    assert(busy->cue_.pending && busy->tts_.starts == 0);
+    clock_us = 901001;
+    busy->schedule_cue();
+    assert(!busy->cue_.pending && !busy->remote_start_pending_ && !busy->wake_handoff_);
+    assert(!busy->protocol_.running && !busy->accepting_);
+    assert(std::string(busy->assist_state_) == "error");
+    delete busy;
+    puts("Assist handoff: mandatory single start cue, HA end-cue settings, remote/follow-up starts and cancellation passed");
 }
 '''
 HARNESS = HARNESS.replace("@WAKE@", block("} else if (result == AssistProtocol::Event::Wake) {"))
@@ -171,8 +200,9 @@ HARNESS = HARNESS.replace("@METHODS@", "\n".join(method(n) for n in ["reset_audi
 with tempfile.TemporaryDirectory(prefix="johan2-assist-handoff-") as temp:
     source = Path(temp) / "test.cpp"
     binary = Path(temp) / "test"
-    source.write_text(HARNESS)
-    subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined",
-                    "-I", str(ROOT / "main"), "-I", str(ROOT / "managed_components/bblanchon__arduinojson/src"),
-                    str(source), "-o", str(binary)], check=True)
-    subprocess.run([str(binary)], check=True)
+    for end_cue_build in (True, False):
+        source.write_text(HARNESS.replace("kEndCue = true", f"kEndCue = {str(end_cue_build).lower()}"))
+        subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined",
+                        "-I", str(ROOT / "main"), "-I", str(ROOT / "managed_components/bblanchon__arduinojson/src"),
+                        str(source), "-o", str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
