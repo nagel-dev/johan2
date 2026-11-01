@@ -1,26 +1,32 @@
 # Changes
 
-## 2026-11-01 (Assist audio requirement)
+## 2026-11-01 (shorter startup speech)
 
-- Require an audio output when starting Assist, so the mandatory start cue always has a playback destination. `./scripts/idf.sh build` passed; physical playback remains unverified.
+- Shorten the spoken startup example to “Johan is gestart.”
 
-## 2026-11-01 (follow-up priority)
+## 2026-11-01 (quieter music)
 
-- Let a requested follow-up start while an announcement is queued; the announcement waits for the conversation instead of blocking it until expiry.
+- Reduce Sendspin music to one quarter of its previous digital amplitude at every player volume, including while ducked. Direct speech and cues keep their existing gain.
+- Build and audio mixing/output tests passed; flashed via USB with verified hashes. Actual listening level remains to be checked.
 
-## 2026-11-01 (playback job mode)
+## 2026-11-01 (startup speech and Bose cleanup)
 
-- Represent reply, start cue, end cue and speaker probe as one playback mode and use one job-start path, eliminating conflicting mode flags.
+- Request a short spoken volume example once after startup, using the configured HA Assist pipeline and the same local playback and gain as direct replies and local announcements. Wait for other speech to finish; skip the example if generation or playback fails. Playback depends on HA availability.
+- Remove the Bose test tones, measurement endpoint, browser comparison, HA package and related tests. Discard the unfinished automatic output compensation. The normal command-start cue remains unchanged.
+- In live HA, the package was renamed to `johan2_bose.yaml.bak`, the configuration checked, and input texts, scripts and templates reloaded. Some Bose entity states remained as unavailable restored entries; REST command reload reported an error.
+- **Validation** ESP-IDF build and host Assist protocol, handoff, announcement, audio output and TTS tests pass. Host fixture tests ran without sanitizers because the local sanitizer runtime terminates with SIGILL. Flashed via USB with verified hashes after one connection retry; physical playback has not yet been confirmed.
 
-## 2026-11-01 (explicit reply cancellation)
-
-- Return a distinct cancelled result for interrupted direct replies; do not treat cancellation as successful playback or trigger a fallback reply. Timeout and local-announcement outcomes remain separately tracked.
-- Validation for the four simplifications: the handoff test covers a queued announcement and follow-up with both end-cue settings; playback checks cover mode selection, busy exclusion, allocation/HTTP failures and cancellation during reading and cleanup. The host harnesses ran without sanitizers because the host sanitizer runtime fails even for an empty program. `./scripts/idf.sh build` passed with ESP-IDF 6.0.1. The firmware has not been flashed or physically tested.
 
 ## 2026-11-01 (mandatory command-start cue)
 
 - **Firmware** Always request one start cue after wake detection, remote start and each follow-up. Initialize local cue playback even when direct TTS and the end cue are disabled. The existing `JOHAN2_LISTENING_CUE` option and HA helper now control only the end cue. If playback remains busy beyond the start-cue deadline, cancel the command instead of continuing silently.
+- **Design** Describe the start cue as a fixed, non-configurable part of command startup throughout `ONTWERP_SIGNAALVERWERKING.md`, including readiness, failure handling and acceptance checks.
 - **Validation** Assist handoff checks pass with the end cue compiled on/off and the HA helper on/off, covering wake/remote/follow-up starts, deduplication and busy-playback cancellation. Assist protocol, announcement protocol and listening-cue host checks pass; the handoff harness ran without sanitizers because this host's sanitizer runtime also crashes on an empty program. `./scripts/idf.sh build` passes with ESP-IDF 6.0.1. No flash or physical playback verification performed.
+
+## 2026-11-01 (signal-processing design)
+
+- **Design** Add and condense `ONTWERP_SIGNAALVERWERKING.md` around the voice controller, capture and output contracts, AEC limits, implementation order and acceptance checks.
+- **Implementation gates** Require a prototype against Sendspin's actual progress accounting, an internal-RAM/CPU budget check, and physical wake/VAD tests before replacing existing paths. Documentation only; firmware, local configuration and managed components are unchanged. No new build, flash or physical validation is claimed.
 
 ## 2026-10-31 (no retry after silence)
 
