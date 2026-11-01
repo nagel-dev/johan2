@@ -7,7 +7,7 @@
 // HA Assist wire state, kept independent of ESP-IDF so it can be tested on a host.
 class AssistProtocol {
 public:
-    enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, OwnerChanged, SyncError, WifiError, DiagnosticsError, LocalAnnouncement, LocalAnnouncementStop, LocalAnnouncementError, Transcript, SpeechReady, StopTranscript, PlaybackAccepted, PlaybackFailed, Silent, Finished, Error, AuthInvalid };
+    enum class Event { None, Authenticate, Ready, Wake, Listening, Processing, RemoteStart, RemoteCancel, OwnerChanged, SyncError, WifiError, DiagnosticsError, LocalAnnouncement, LocalAnnouncementStop, LocalAnnouncementError, Transcript, SpeechReady, StartupSpeechReady, StartupSpeechFailed, StopTranscript, PlaybackAccepted, PlaybackFailed, Silent, Finished, Error, AuthInvalid };
     bool end_cue_enabled = true; // HA helper controls only the end cue; starts always beep.
     bool owns_voice = false; // Fail closed until HA grants this device voice ownership.
     bool authenticated = false;
@@ -43,6 +43,8 @@ public:
         control_id_ = state_id_ = heartbeat_id_ = wifi_id_ = 0;
         diagnostics_id_ = 0;
         local_subscription_id_ = local_status_id_ = 0;
+        startup_id_ = 0;
+        startup_url_.clear();
         local_url_.clear();
         local_token_.clear();
         last_local_url_.clear();
@@ -53,6 +55,22 @@ public:
         response_media_.clear();
         response_url_.clear();
         response_mime_.clear();
+    }
+    std::string startup_speech(const char* pipeline) {
+        JsonDocument doc;
+        doc["id"] = startup_id_ = ++next_id_;
+        doc["type"] = "assist_pipeline/run";
+        doc["start_stage"] = "tts";
+        doc["end_stage"] = "tts";
+        doc["timeout"] = 30;
+        doc["input"]["text"] = "Johan is gestart.";
+        if (pipeline && *pipeline) doc["pipeline"] = pipeline;
+        std::string result;
+        serializeJson(doc, result);
+        return result;
+    }
+    std::string startup_speech_url(const char* websocket_url) const {
+        return resolve_media(startup_url_, websocket_url, false);
     }
     std::string begin(const char* pipeline, bool speak = false, const char* conversation_id = nullptr, bool skip_wake = false) {
         awaiting_wake_ = !skip_wake;
@@ -241,6 +259,19 @@ public:
         if (type == "auth_required") return Event::Authenticate;
         if (type == "auth_ok") { authenticated = true; return Event::Ready; }
         if (type == "auth_invalid") { reset(); return Event::AuthInvalid; }
+        if (startup_id_ && (doc["id"] | -1) == startup_id_) {
+            if ((type == "result" && doc["success"] == false) ||
+                (type == "event" && doc["event"]["type"] == "error")) {
+                startup_id_ = 0;
+                return Event::StartupSpeechFailed;
+            }
+            if (type == "event" && doc["event"]["type"] == "tts-end") {
+                startup_url_ = doc["event"]["data"]["tts_output"]["url"] | "";
+                startup_id_ = 0;
+                return startup_url_.empty() ? Event::StartupSpeechFailed : Event::StartupSpeechReady;
+            }
+            return Event::None;
+        }
         if (type == "result" && doc["success"] == false &&
             ((local_subscription_id_ && (doc["id"] | -1) == local_subscription_id_) ||
              (local_status_id_ && (doc["id"] | -1) == local_status_id_))) return Event::LocalAnnouncementError;
@@ -477,6 +508,8 @@ private:
         return media;
     }
     int next_id_ = 0;
+    int startup_id_ = 0;
+    std::string startup_url_;
     int control_id_ = 0, state_id_ = 0, heartbeat_id_ = 0, wifi_id_ = 0;
     int diagnostics_id_ = 0;
     int local_subscription_id_ = 0, local_status_id_ = 0;

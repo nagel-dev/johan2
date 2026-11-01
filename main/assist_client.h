@@ -46,6 +46,9 @@ private:
     int64_t diagnostics_report_at_{0};
     bool direct_playing_{false};
     bool direct_timed_out_{false};
+    bool startup_requested_{false}, startup_playing_{false};
+    std::string startup_url_;
+    int64_t startup_deadline_{0};
     std::string local_announcement_url_, local_announcement_token_;
     int64_t local_announcement_deadline_{0};
     bool local_announcement_playing_{false}, local_announcement_cancelled_{false};
@@ -76,8 +79,6 @@ private:
     bool remote_start_pending_{false};
     // Rotate the wake run before sending command audio; retain its single start cue.
     bool wake_handoff_{false};
-    bool speaker_probe_active_{false};
-    int64_t speaker_probe_until_{0};
     const char* assist_state_{"offline"};
     int64_t state_refresh_at_{0};
     int64_t heartbeat_at_{0};

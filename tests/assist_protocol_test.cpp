@@ -5,6 +5,18 @@
 using Event = AssistProtocol::Event;
 int main() {
     AssistProtocol p;
+    AssistProtocol startup;
+    JsonDocument startup_request;
+    assert(!deserializeJson(startup_request, startup.startup_speech("my-pipeline")));
+    assert(startup_request["start_stage"] == "tts" && startup_request["end_stage"] == "tts");
+    assert(startup_request["pipeline"] == "my-pipeline");
+    assert(startup_request["input"]["text"] == "Johan is gestart.");
+    assert(startup.receive(R"({"id":1,"type":"event","event":{"type":"run-start"}})") == Event::None);
+    assert(startup.receive(R"({"id":1,"type":"event","event":{"type":"tts-end","data":{"tts_output":{"url":"/api/tts_proxy/example"}}}})") == Event::StartupSpeechReady);
+    assert(startup.startup_speech_url("ws://ha.local:8123/api/websocket") == "http://ha.local:8123/api/tts_proxy/example");
+    assert(!startup.running && !startup.streaming);
+    startup.startup_speech("");
+    assert(startup.receive(R"({"id":2,"type":"event","event":{"type":"error"}})") == Event::StartupSpeechFailed);
     // Retire wake audio/VAD before accepting a command. Delayed events from that
     // subscription must not finish the new STT capture or supply a transcript.
     AssistProtocol handoff;

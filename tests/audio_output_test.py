@@ -185,7 +185,7 @@ int main() {
         int16_t actual, spoken;
         memcpy(&actual, delivered.data() + i * 2, 2);
         memcpy(&spoken, expected.data() + i * 2, 2);
-        assert(actual == spoken + 100);
+        assert(actual == spoken + 25);
     }
 
     delivered.clear();
@@ -193,7 +193,7 @@ int main() {
     music_only.volume_.store(100);
     music_only.tts_running_.store(false);
     assert(music_only.on_audio_write(reinterpret_cast<uint8_t*>(extremes), sizeof(extremes), 20) == sizeof(extremes));
-    int16_t quarter_extremes[4]{8191, -8192, 8191, -8192};
+    int16_t quarter_extremes[4]{2047, -2048, 2047, -2048};
     assert(delivered.size() == sizeof(quarter_extremes) && memcmp(delivered.data(), quarter_extremes, sizeof(quarter_extremes)) == 0);
 
     for (int volume : {0, 1, 5, 100}) {
@@ -203,7 +203,7 @@ int main() {
         for (size_t i = 0; i < 4; ++i) {
             int16_t actual;
             memcpy(&actual, delivered.data() + i * 2, 2);
-            assert(actual == static_cast<int32_t>(extremes[i]) * volume / 400);
+            assert(actual == static_cast<int32_t>(extremes[i]) * volume / 1600);
         }
     }
 
